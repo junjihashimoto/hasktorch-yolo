@@ -23,14 +23,18 @@ https://pjreddie.com/media/files/yolov3.weights
 ### linux+cabal
 
 ```shell
-git lfs clone git@github.com:junjihashimoto/hasktorch-yolo.git
+git clone git@github.com:junjihashimoto/hasktorch-yolo.git
+cd hasktorch-yolo
+./download-weights.sh
 cabal test all
 ```
 
 ### linux+nix
 
 ```shell
-git lfs clone git@github.com:junjihashimoto/hasktorch-yolo.git
+git clone git@github.com:junjihashimoto/hasktorch-yolo.git
+cd hasktorch-yolo
+./download-weights.sh
 nix-build
 ```
 
