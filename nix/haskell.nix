@@ -14,7 +14,7 @@
 
 let
 
-  src = haskell-nix.haskellLib.cleanGit {
+  orgSrc = haskell-nix.haskellLib.cleanGit {
       name = "hasktorch-yolo";
       src = ../.;
   };
@@ -22,7 +22,11 @@ let
   # This creates the Haskell package set.
   # https://input-output-hk.github.io/haskell.nix/user-guide/projects/
   pkgSet = haskell-nix.cabalProject {
-    inherit src;
+    src = orgSrc // {
+      filter = path: type:
+        (lib.any (i: (lib.hasInfix i path)) ["/test-data" "/weights"])
+        || orgSrc.filter path type;
+    };
 
     compiler-nix-name = compiler;
 
