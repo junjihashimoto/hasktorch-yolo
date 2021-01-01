@@ -27,6 +27,7 @@ library
                    , Torch.Vision.Darknet.Config
                    , Torch.Vision.Darknet.Forward
                    , Torch.Vision.Metrics
+                   , Torch.Vision.Saliency
   build-depends:     base >= 4.7 && < 5
                    , hasktorch >= 0.2 && < 0.3
                    , text
@@ -56,6 +57,7 @@ test-suite spec
   main-is:            Spec.hs
   other-modules:      MetricsSpec
                     , DarknetSpec
+                    , ImageSpec
   ghc-options:         -fno-warn-partial-type-signatures -rtsopts=all
   build-depends:      base >= 4.7 && < 5
                     , hasktorch
