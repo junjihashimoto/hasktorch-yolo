@@ -26,6 +26,7 @@ library
   exposed-modules:   Torch.Vision.Darknet.Spec
                    , Torch.Vision.Darknet.Config
                    , Torch.Vision.Darknet.Forward
+                   , Torch.Vision.Datasets
                    , Torch.Vision.Metrics
                    , Torch.Vision.Saliency
   build-depends:     base >= 4.7 && < 5
@@ -35,12 +36,27 @@ library
                    , config-ini
                    , bytestring
                    , safe-exceptions
+                   , split
   ghc-options:       -Wall
 
   default-language:  Haskell2010
+  default-extensions:  Strict
+                     , StrictData
 
 executable yolov3
   hs-source-dirs:      yolov3
+  main-is:             Main.hs
+  ghc-options:         -fno-warn-partial-type-signatures -rtsopts
+  build-depends:       bytestring >= 0.10.8
+                     , hasktorch-yolo
+                     , hasktorch
+                     , JuicyPixels
+                     , safe-exceptions
+                     , containers
+                     , base
+
+executable yolov3-test
+  hs-source-dirs:      yolov3-test
   main-is:             Main.hs
   ghc-options:         -fno-warn-partial-type-signatures -rtsopts
   build-depends:       bytestring >= 0.10.8

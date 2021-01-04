@@ -10,6 +10,10 @@ import Control.Exception.Safe
 import Test.Hspec
 import Torch
 import Torch.Vision.Metrics
+import qualified System.IO
+import Torch.Vision
+import Torch.Serialize
+import Control.Monad(forM_)
 
 main = hspec spec
 
@@ -173,10 +177,10 @@ classes =
 spec :: Spec
 spec = do
   describe "Metrics for computer vision" $ do
-    it "AP" $ do
+    it "recall & precistion to AP" $ do
       let (_,_,_,ap) = computeAP' recall_vs_precision
       ap `shouldBe` 0.24560957
-    it "AP" $ do
+    it "confidence & TP to AP" $ do
       computeRecallAndPrecision confidence_tp 15 `shouldBe`
         [ (6.666667e-2,1.0),
           (6.666667e-2,0.5),
@@ -202,3 +206,38 @@ spec = do
           (0.46666667,0.3043478),
           (0.46666667,0.29166666)
         ]
+    it "metrics" $ do
+      outputs_of_nms <- System.IO.withFile "test-data/metrics/outputs.bin" System.IO.ReadMode $ \h -> do
+        loadBinary h (zeros' [432, 7])
+      let xyxy_conf_cls_classid = asValue outputs_of_nms :: [[Float]]
+      map (\(_:_:_:_:_:_:cid:_) -> cid) xyxy_conf_cls_classid `shouldBe` classes
+    it "Compute AP from bounding boxes" $ do
+      targets' <- readBoundingBox "test-data/metrics/COCO_val2014_000000000164.txt"
+      let targets = map (toXYXY 416 416 . rescale 640 480 416 416) targets'
+      outputs_of_nms <- System.IO.withFile "test-data/metrics/outputs.bin" System.IO.ReadMode $ \h -> do
+        loadBinary h (zeros' [432, 7])
+      let xyxy_conf_cls_classid = asValue outputs_of_nms :: [[Float]]
+          inference_bbox = map (\[x0, y0, x1, y1, conf, cls_conf, cid] -> (BBox (round cid) x0 y0 x1 y1, conf) ) xyxy_conf_cls_classid
+          tp' = map (snd . snd) $ computeTPForBBox 0.5 targets inference_bbox
+          exps = (map ((==) 1) tp)
+      tp' `shouldBe` exps
+      computeAPForBBox 0.5 targets inference_bbox `shouldBe`
+        [(39,(0.8,0.2580645,0.39024392,0.5480921)),
+         (40,(1.0,0.33333334,0.5,0.7984007)),
+         (41,(0.6,0.11764706,0.19672132,0.2820028)),
+         (45,(0.16666667,0.14285715,0.15384616,2.3809526e-2)),
+         (56,(1.0,1.0,1.0,1.0)),
+         (60,(0.0,0.0,0.0,0.0)),
+         (68,(1.0,1.0,1.0,1.0)),
+         (69,(1.0,0.5,0.6666667,0.5)),
+         (72,(1.0,1.0,1.0,1.0))]
+          
+  describe "Bounding Box" $ do
+    it "rescale" $ do
+      let b   = BoundingBox 39 0.615391 0.411156 0.012531 0.055979
+          exp = BoundingBox 39 0.615391 0.43336698 1.2530999e-2 4.1984253e-2
+      rescale 640 480 416 416 b `shouldBe` exp
+    it "xywh -> xyxy" $ do
+      let b = BoundingBox 39 0.615391 0.43336698 1.2530999e-2 4.1984253e-2
+          exp = BBox 39 253.39621 171.54794 258.6091 189.0134
+      toXYXY 416 416 b `shouldBe` exp
