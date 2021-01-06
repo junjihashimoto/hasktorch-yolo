@@ -69,6 +69,21 @@ executable yolov3-test
   default-extensions:  Strict
                      , StrictData
 
+executable yolov3-pipelined-test
+  hs-source-dirs:      yolov3-pipelined-test
+  main-is:             Main.hs
+  ghc-options:         -fno-warn-partial-type-signatures -rtsopts
+  build-depends:       bytestring >= 0.10.8
+                     , hasktorch-yolo
+                     , hasktorch
+                     , JuicyPixels
+                     , safe-exceptions
+                     , containers
+                     , base
+                     , pipes-concurrency
+  default-extensions:  Strict
+                     , StrictData
+
 test-suite spec
   type:               exitcode-stdio-1.0
   hs-source-dirs:     test

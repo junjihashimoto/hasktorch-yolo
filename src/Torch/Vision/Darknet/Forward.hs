@@ -9,15 +9,11 @@
 
 module Torch.Vision.Darknet.Forward where
 
-import Control.Monad (forM, join, mapM, when)
--- import Codec.Serialise
-
+import Control.Monad (forM, join)
 import qualified Data.ByteString as BS
-import Data.List ((!!))
 import Data.Map (Map, empty, insert)
 import qualified Data.Map as M
 import Data.Maybe (catMaybes, isJust)
-import Debug.Trace
 import GHC.Exts
 import GHC.Generics
 import qualified System.IO
@@ -29,8 +25,9 @@ import Torch.NN
 import Torch.Serialize
 import Torch.Tensor as D
 import Torch.TensorFactories
-import Torch.Typed.NN (HasForward (..))
+--import Torch.Typed.NN (HasForward (..))
 import qualified Torch.Vision.Darknet.Spec as S
+import Debug.Trace
 
 type Index = Int
 
@@ -167,9 +164,9 @@ instance HasForward Route (Map Int Tensor) Tensor where
 
 data ShortCut = ShortCut
   { from :: Int,
-    isLeaky :: Bool,
-    shortCutWeight :: Tensor,
-    shortCutBias :: Tensor
+    isLeaky :: Bool
+--    shortCutWeight :: Tensor,
+--    shortCutBias :: Tensor
   }
   deriving (Show, Generic, Parameterized)
 
@@ -181,30 +178,29 @@ instance Randomizable S.ShortCutSpec ShortCut where
 
 instance HasForward ShortCut (Tensor, Map Int Tensor) Tensor where
   forward ShortCut {..} (input, inputs) =
-    let [b0, c0, x0, y0] = D.shape input
+    let [_, c0, x0, y0] = D.shape input
         shortcut = inputs M.! from
-        [b1, c1, x1, y1] = D.shape shortcut
-        stride = if x1 < x0 then 1 else x1 `div` x0
-        sample = if x0 < x1 then 1 else x0 `div` x1
-        zero2d :: Int -> [[Float]]
-        zero2d n = replicate n $ replicate n 0
-        one2d :: Int -> [[Float]]
-        one2d n = (1 : replicate (n -1) 0) : (replicate (n -1) $ replicate n 0)
-        weight :: [[[[Float]]]]
-        weight = do
-          o <- [0 .. (c0 -1)]
-          return $ do
-            i <- [0 .. (c1 -1)]
-            if o == i
-              then return $ one2d stride
-              else return $ zero2d stride
-        dev = device input
-        weight' = _toDevice dev $ asTensor weight
+        [_, c1, x1, y1] = D.shape shortcut
         activation = if isLeaky then flip I.leaky_relu 0.1 else id
-     in -- trace (show (D.shape input) ++ show (D.shape shortcut) ++"\n") $
-        if c0 == c1 && x0 == x1 && y0 == y1
-          then activation $ input + shortcut
-          else activation $ input + D.conv2d' weight' (_toDevice dev $ zeros' [c0]) (stride, stride) (0, 0) shortcut
+    in if c0 == c1 && x0 == x1 && y0 == y1
+       then activation $ input + shortcut
+       else
+         let stride = if x1 < x0 then 1 else x1 `div` x0
+             zero2d :: Int -> [[Float]]
+             zero2d n = replicate n $ replicate n 0
+             one2d :: Int -> [[Float]]
+             one2d n = (1 : replicate (n -1) 0) : (replicate (n -1) $ replicate n 0)
+             weight :: [[[[Float]]]]
+             weight = do
+               o <- [0 .. (c0 -1)]
+               return $ do
+                 i <- [0 .. (c1 -1)]
+                 if o == i
+                   then return $ one2d stride
+                   else return $ zero2d stride
+             dev = device input
+             weight' = _toDevice dev $ asTensor weight
+          in activation $ input + D.conv2d' weight' (_toDevice dev $ zeros' [c0]) (stride, stride) (0, 0) shortcut
   forwardStoch f a = pure $ forward f a
 
 type Anchors = [(Float, Float)]
@@ -505,8 +501,6 @@ instance HasForward Yolo (Maybe Tensor, Tensor) Tensor where
   forward yolo@Yolo {..} (train, input) =
     let num_samples = D.size 0 input
         grid_size = D.size 2 input
-        g = grid_size
-        num_anchors = length anchors
         stride = (fromIntegral img_size) / (fromIntegral grid_size) :: Float
         prediction = toPrediction yolo input
         pred_boxes = toPredBox yolo prediction stride
@@ -551,7 +545,7 @@ loadWeights (Darknet layers) weights_file = do
           new_params_b <- loadBinary handle (toDependent bias) >>= makeIndependent
           new_params_w <- loadBinary handle (toDependent weight) >>= makeIndependent
           return $ (i, LConvolution (Convolution (Conv2d new_params_w new_params_b) a b c))
-        LConvolutionWithBatchNorm (ConvolutionWithBatchNorm (Conv2d weight bias) (BatchNorm bw bb rm rv) a b c) -> do
+        LConvolutionWithBatchNorm (ConvolutionWithBatchNorm (Conv2d weight _) (BatchNorm bw bb rm rv) a b c) -> do
           new_bb <- join $ makeIndependent <$> loadBinary handle (toDependent bw)
           new_bw <- join $ makeIndependent <$> loadBinary handle (toDependent bb)
           new_rm <- toDependent <$> join (makeIndependentWithRequiresGrad <$> loadBinary handle rm <*> pure False)
@@ -568,7 +562,7 @@ loadWeights (Darknet layers) weights_file = do
 
 instance Randomizable S.DarknetSpec Darknet where
   sample (S.DarknetSpec layers) = do
-    layers <- forM (toList layers) $ \(idx, layer) ->
+    layers' <- forM (toList layers) $ \(idx, layer) ->
       case layer of
         S.LConvolutionSpec s -> (\s -> (idx, (LConvolution s))) <$> sample s
         S.LConvolutionWithBatchNormSpec s -> (\s -> (idx, (LConvolutionWithBatchNorm s))) <$> sample s
@@ -579,7 +573,7 @@ instance Randomizable S.DarknetSpec Darknet where
         S.LRouteSpec s -> (\s -> (idx, (LRoute s))) <$> sample s
         S.LShortCutSpec s -> (\s -> (idx, (LShortCut s))) <$> sample s
         S.LYoloSpec s -> (\s -> (idx, (LYolo s))) <$> sample s
-    pure $ Darknet (fromList layers)
+    pure $ Darknet (fromList layers')
 
 forwardDarknet :: Darknet -> (Maybe Tensor, Tensor) -> ((Map Index Tensor), Tensor)
 forwardDarknet = forwardDarknet' (-1)
@@ -589,7 +583,7 @@ forwardDarknet' depth (Darknet layers) (train, input) = loop depth layers empty 
   where
     loop :: Int -> [(Index, Layer)] -> (Map Index Tensor) -> [Tensor] -> ((Map Index Tensor), Tensor)
     loop 0 _ maps tensors = (maps, D.cat (D.Dim 1) (reverse tensors))
-    loop n [] maps tensors = (maps, D.cat (D.Dim 1) (reverse tensors))
+    loop _ [] maps tensors = (maps, D.cat (D.Dim 1) (reverse tensors))
     loop n ((idx, layer) : next) layerOutputs yoloOutputs =
       let input' = (if idx == 0 then input else layerOutputs M.! (idx -1))
        in --       in case (trace (show idx ++ "\n" ++ show (D.shape input') ++ "\n") layer) of
@@ -657,36 +651,44 @@ toDetection ::
   -- | confidence threshold
   Float ->
   -- | (the number of objects that exceed the threshold)
-  Tensor
+  Maybe Tensor
 toDetection prediction conf_thres =
-  let indexes = ((prediction ! (Ellipsis, 4)) `D.ge` asTensor conf_thres)
-      prediction' = xywh2xyxy $ prediction ! indexes
-      n = (reverse $ D.shape prediction) !! 1
-      ids = (D.reshape [1, n] $ (arange' (0 :: Int) n (1 :: Int))) ! indexes
-      offset_class = 5
-      (values, indices) = D.maxDim (D.Dim (-1)) D.RemoveDim (prediction' ! (Ellipsis, Slice (offset_class, None)))
-      list_of_detections =
-        [ prediction' ! (Ellipsis, Slice (0, 5)),
-          D.stack
-            (D.Dim (-1))
-            [ values,
-              indices,
-              ids
-            ]
-        ]
-      detections = D.cat (D.Dim (-1)) list_of_detections
-      score = prediction' ! (Ellipsis, 4) * values
-      detections' = detections ! (I.argsort score (-1) True)
-   in detections'
-
+  if head (shape mprediction') == 0
+  then Nothing
+  else
+    let (values, indices) = D.maxDim (D.Dim (-1)) D.RemoveDim mprediction'
+        list_of_detections =
+          [ prediction' ! (Ellipsis, Slice (0, 5)),
+            D.stack
+              (D.Dim (-1))
+              [ values,
+                indices,
+                ids
+              ]
+          ]
+        detections = D.cat (D.Dim (-1)) list_of_detections
+        score = prediction' ! (Ellipsis, 4) * values
+        detections' = detections ! (I.argsort score (-1) True)
+     in Just detections'
+  where
+    indexes = ((prediction ! (Ellipsis, 4)) `D.ge` asTensor conf_thres)
+    prediction' = xywh2xyxy $ prediction ! indexes
+    n = (reverse $ D.shape prediction) !! 1
+    ids = (D.reshape [1, n] $ (arange' (0 :: Int) n (1 :: Int))) ! indexes
+    offset_class = 5
+    mprediction' = prediction' ! (Ellipsis, Slice (offset_class, None))
+        
 nonMaxSuppression ::
   Tensor ->
   Float ->
   Float ->
   [Tensor]
-nonMaxSuppression prediction conf_thres nms_thres = loop org_detections
+nonMaxSuppression prediction conf_thres nms_thres =
+  case morg_detections of
+    Just org_detecgtions -> loop org_detecgtions
+    Nothing -> []
   where
-    org_detections = toDetection prediction conf_thres
+    morg_detections = toDetection prediction conf_thres
     loop :: Tensor -> [Tensor]
     loop detections =
       if (D.size 0 detections == 0)

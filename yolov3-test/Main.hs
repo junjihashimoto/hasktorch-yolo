@@ -150,7 +150,8 @@ main = do
       Right (cfg :: Datasets) -> return cfg
       Left err -> throwIO $ userError err
 
-  v <- forM (Prelude.take 3 (zip [0 ..] (makeBatch 16 $ valid datasets))) $ \(i, batch) -> do
+  v <- forM (Prelude.drop 69 (zip [0 ..] (makeBatch 16 $ valid datasets))) $ \(i, batch) -> do
+--  v <- forM ((zip [0 ..] (makeBatch 16 $ valid datasets))) $ \(i, batch) -> do
     imgs' <- forM batch $ \file -> do
       bboxes <- readBoundingBox $ toLabelPath file
       Main.readImage file 416 416 >>= \case
@@ -164,7 +165,7 @@ main = do
     let imgs = catMaybes imgs'
         btargets = map fst imgs :: [[BBox]]
         input_data = cat (Dim 0) $ map snd imgs :: Tensor
-        inferences = snd (forwardDarknet net' (Nothing, input_data))
+    inferences <- detach $ snd (forwardDarknet net' (Nothing, input_data))
     print $ (i, shape inferences)
     let boutputs = batchedNonMaxSuppression inferences 0.001 0.5
     forM (zip btargets boutputs) $ \(targets, outputs) -> do
