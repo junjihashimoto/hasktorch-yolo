@@ -710,7 +710,7 @@ batchedNonMaxSuppression ::
   Float ->
   Float ->
   [[Tensor]]
-batchedNonMaxSuppression predictions conf_thres nms_thres = map (\p -> nonMaxSuppression p conf_thres nms_thres) $ I.split predictions 1 0 
+batchedNonMaxSuppression predictions conf_thres nms_thres = map (\p -> nonMaxSuppression p conf_thres nms_thres) $ I.split predictions 1 0
 
 updateDarknet :: Darknet -> (Int -> Layer -> IO Layer) -> IO Darknet
 updateDarknet (Darknet darknet) func = do

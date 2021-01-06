@@ -1,7 +1,7 @@
-{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE ExtendedDefaultRules #-}
 {-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
@@ -12,18 +12,20 @@ import qualified Data.Text as T
 import qualified Data.Text.IO as T
 
 data Datasets' = Datasets'
-  { classes' :: Int
-  , train' :: FilePath
-  , valid' :: FilePath
-  , names' :: FilePath
-  } deriving (Show, Eq)
+  { classes' :: Int,
+    train' :: FilePath,
+    valid' :: FilePath,
+    names' :: FilePath
+  }
+  deriving (Show, Eq)
 
 data Datasets = Datasets
-  { classes :: Int
-  , train :: [FilePath]
-  , valid :: [FilePath]
-  , names :: [String]
-  } deriving (Show, Eq)
+  { classes :: Int,
+    train :: [FilePath],
+    valid :: [FilePath],
+    names :: [String]
+  }
+  deriving (Show, Eq)
 
 configParser :: IniParser Datasets'
 configParser =
@@ -40,17 +42,18 @@ readDatasets filepath = do
   case parseIniFile contents configParser of
     Left err -> return $ Left err
     Right (Datasets' {..}) -> do
-      r <- Datasets
-           <$> pure classes'
-           <*> (lines <$> Prelude.readFile train')
-           <*> (lines <$> Prelude.readFile valid')
-           <*> (lines <$> Prelude.readFile names')
+      r <-
+        Datasets
+          <$> pure classes'
+          <*> (lines <$> Prelude.readFile train')
+          <*> (lines <$> Prelude.readFile valid')
+          <*> (lines <$> Prelude.readFile names')
       return $ Right r
-  
+
 toLabelPath :: FilePath -> FilePath
 toLabelPath file =
   T.unpack $
-  T.replace "images" "labels" $
-  T.replace ".jpg" ".txt" $ 
-  T.replace ".png" ".txt" $
-  T.pack file
+    T.replace "images" "labels" $
+      T.replace ".jpg" ".txt" $
+        T.replace ".png" ".txt" $
+          T.pack file

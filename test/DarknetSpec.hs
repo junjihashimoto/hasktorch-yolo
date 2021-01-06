@@ -137,19 +137,19 @@ spec = do
         loadBinary h (zeros' [1, 3, 416, 416])
       shape (input_data) `shouldBe` [1, 3, 416, 416]
       output_data0 <- System.IO.withFile "test-data/metrics/outputs.bin" System.IO.ReadMode $ \h -> do
-        loadBinary h (zeros' [432,7])
-      shape (output_data0) `shouldBe` [432,7]
+        loadBinary h (zeros' [432, 7])
+      shape (output_data0) `shouldBe` [432, 7]
       let outputs = nonMaxSuppression (snd (forwardDarknet net' (Nothing, input_data))) 0.001 0.5
       length (outputs) `shouldBe` 432
       forM_ outputs $ \output -> do
         shape output `shouldBe` [8]
       forM_ outputs $ \output -> do
-        shape (output ! (Slice (0,7))) `shouldBe` [7]
+        shape (output ! (Slice (0, 7))) `shouldBe` [7]
       length (outputs) `shouldBe` 432
---      print output_data0
---      print outputs
-      forM_ (zip [0..] outputs) $ \(i, output) -> do
-        asValue (mseLoss (output_data0 ! i) (output ! (Slice (0,7)))) < (0.0001 :: Float) `shouldBe` True
+      --      print output_data0
+      --      print outputs
+      forM_ (zip [0 ..] outputs) $ \(i, output) -> do
+        asValue (mseLoss (output_data0 ! i) (output ! (Slice (0, 7)))) < (0.0001 :: Float) `shouldBe` True
     it "Inference" $ do
       mconfig <- readIniFile "config/yolov3.cfg"
       Right mconfig' <- readIniFile' "config/yolov3.cfg"

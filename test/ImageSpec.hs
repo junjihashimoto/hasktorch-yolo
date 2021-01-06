@@ -15,15 +15,15 @@ import GHC.Exts
 import GHC.Generics
 import qualified System.IO
 import Test.Hspec
+import Torch.DType
 import Torch.Functional
 import qualified Torch.Functional.Internal as I
 import Torch.NN
 import Torch.Serialize
 import Torch.Tensor
 import Torch.TensorFactories
-import Torch.Vision
-import Torch.DType
 import Torch.Typed.NN (HasForward (..))
+import Torch.Vision
 import Torch.Vision.Darknet.Config
 import Torch.Vision.Darknet.Forward
 import Torch.Vision.Darknet.Spec
