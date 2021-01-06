@@ -81,6 +81,9 @@ executable yolov3-pipelined-test
                      , containers
                      , base
                      , pipes-concurrency
+                     , pipes
+                     , async
+                     , mtl
   default-extensions:  Strict
                      , StrictData
 
