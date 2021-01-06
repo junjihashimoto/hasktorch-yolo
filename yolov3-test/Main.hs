@@ -149,9 +149,6 @@ main = do
     readDatasets datasets_file >>= \case
       Right (cfg :: Datasets) -> return cfg
       Left err -> throwIO $ userError err
-  --  valids' <- forM (valid datasets) $ \file -> do
-  --    bboxes <- readBoundingBox $ toLabelPath file
-  --    return (file,map (toXYXY 416 416 . rescale 640 480 416 416) bboxes)
 
   v <- forM (Prelude.take 3 (zip [0 ..] (makeBatch 16 $ valid datasets))) $ \(i, batch) -> do
     imgs' <- forM batch $ \file -> do
@@ -177,8 +174,6 @@ main = do
       return $ (computeTPForBBox 0.5 targets inference_bbox, targets)
   let targets = concat $ map snd (concat v) :: [BBox]
       inferences = concat $ map fst (concat v) :: [(BBox, (Confidence, TP))]
-  --  print (length $ targets)
-  --  print (map length inferences)
   aps <- forM (computeAPForBBox' targets inferences) $ \(cid, (_, _, _, ap)) -> do
     print (cid, ap)
     return ap
