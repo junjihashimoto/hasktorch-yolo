@@ -167,7 +167,9 @@ instance HasForward Route (Map Int Tensor) Tensor where
 
 data ShortCut = ShortCut
   { from :: Int,
-    isLeaky :: Bool
+    isLeaky :: Bool,
+    shortCutWeight :: Tensor,
+    shortCutBias :: Tensor
   }
   deriving (Show, Generic, Parameterized)
 
@@ -702,6 +704,13 @@ nonMaxSuppression prediction conf_thres nms_thres = loop org_detections
               detections' = detections ! (I.logical_not invalid)
               detection' = D.sumDim (D.Dim 0) D.RemoveDim (dtype prediction) (weights * (detections ! (invalid, Slice (0, 4)))) / D.sumAll weights
            in D.cat (D.Dim (-1)) [detection', detection0 ! Slice (4, None)] : loop detections'
+
+batchedNonMaxSuppression ::
+  Tensor ->
+  Float ->
+  Float ->
+  [[Tensor]]
+batchedNonMaxSuppression predictions conf_thres nms_thres = map (\p -> nonMaxSuppression p conf_thres nms_thres) $ I.split predictions 1 0 
 
 updateDarknet :: Darknet -> (Int -> Layer -> IO Layer) -> IO Darknet
 updateDarknet (Darknet darknet) func = do

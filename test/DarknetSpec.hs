@@ -125,6 +125,33 @@ spec = do
       (asValue v :: [Float]) `shouldBe` [0.0, 0.0, 0.0, 0.0]
     it "Inference" $ do
       mconfig <- readIniFile "config/yolov3.cfg"
+      spec <- case mconfig of
+        Right cfg@(DarknetConfig global layers) -> do
+          case toDarknetSpec cfg of
+            Right spec -> return spec
+            Left err -> throwIO $ userError err
+        Left err -> throwIO $ userError err
+      net <- sample spec
+      net' <- loadWeights net "weights/yolov3.weights"
+      input_data <- System.IO.withFile "test-data/metrics/input-images.bin" System.IO.ReadMode $ \h -> do
+        loadBinary h (zeros' [1, 3, 416, 416])
+      shape (input_data) `shouldBe` [1, 3, 416, 416]
+      output_data0 <- System.IO.withFile "test-data/metrics/outputs.bin" System.IO.ReadMode $ \h -> do
+        loadBinary h (zeros' [432,7])
+      shape (output_data0) `shouldBe` [432,7]
+      let outputs = nonMaxSuppression (snd (forwardDarknet net' (Nothing, input_data))) 0.001 0.5
+      length (outputs) `shouldBe` 432
+      forM_ outputs $ \output -> do
+        shape output `shouldBe` [8]
+      forM_ outputs $ \output -> do
+        shape (output ! (Slice (0,7))) `shouldBe` [7]
+      length (outputs) `shouldBe` 432
+--      print output_data0
+--      print outputs
+      forM_ (zip [0..] outputs) $ \(i, output) -> do
+        asValue (mseLoss (output_data0 ! i) (output ! (Slice (0,7)))) < (0.0001 :: Float) `shouldBe` True
+    it "Inference" $ do
+      mconfig <- readIniFile "config/yolov3.cfg"
       Right mconfig' <- readIniFile' "config/yolov3.cfg"
       outputChannels mconfig' 83 `shouldBe` Right 512
       spec <- case mconfig of

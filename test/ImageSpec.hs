@@ -38,4 +38,4 @@ spec = do
         loadBinary h (zeros' [1, 3, 416, 416])
       Right (_, raw) <- readImageAsRGB8WithScaling "test-data/metrics/COCO_val2014_000000000164.jpg" 416 416 True
       let target = divScalar (255 :: Float) (hwc2chw $ toType Float raw)
-      asValue (mseLoss input_data target) < (0.0001 :: Float) `shouldBe` True
+      asValue (mseLoss input_data target) < (0.00001 :: Float) `shouldBe` True

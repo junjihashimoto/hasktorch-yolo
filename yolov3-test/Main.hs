@@ -9,6 +9,7 @@ module Main where
 
 import qualified Codec.Picture as I
 import Control.Monad (forM_, when, foldM, forM)
+import Data.Maybe (catMaybes)
 import Control.Exception.Safe
 import Torch hiding (conv2d, indexPut)
 import Torch.Vision
@@ -17,8 +18,11 @@ import Torch.Vision.Metrics
 import Torch.Vision.Darknet.Config
 import Torch.Vision.Darknet.Forward
 import Torch.Vision.Darknet.Spec
+import Torch.Serialize
 import System.Environment (getArgs)
 import qualified Data.Map as M
+import qualified Torch.Functional.Internal as I
+import System.Mem (performGC)
 
 labels :: [String]
 labels = [
@@ -104,6 +108,24 @@ labels = [
   "toothbrush"
   ]
 
+makeBatch :: Int -> [a] -> [[a]]
+makeBatch num_batch datasets =
+  let (a,ax) = (Prelude.take num_batch datasets, Prelude.drop num_batch datasets)
+  in
+    if length a < num_batch
+    then a:[]
+    else a: makeBatch num_batch ax
+
+readImage :: FilePath -> Int -> Int -> IO (Either String (Int,Int,I.Image I.PixelRGB8, Tensor))
+readImage file width height =
+  I.readImage file >>= \case
+    Left err -> return $ Left err
+    Right img' -> do
+      let rgb8 = I.convertRGB8 img'
+          img = (resizeRGB8 width height True) rgb8
+      return $ Right (I.imageWidth rgb8, I.imageHeight rgb8, img, fromDynImage . I.ImageRGB8 $ img)
+
+  
 main = do
   args <- getArgs
   when (length args /= 3) $ do
@@ -127,21 +149,36 @@ main = do
   datasets <- readDatasets datasets_file >>= \case
     Right (cfg :: Datasets) -> return cfg
     Left err -> throwIO $ userError err
-  valids <- forM (valid datasets) $ \file -> do
-    bboxes <- readBoundingBox $ toLabelPath file
-    return (file,map (toXYXY 416 416 . rescale 640 480 416 416) bboxes)
-  return ()
-
-  v <- forM valids $ \(input_file,targets) ->
-    readImageAsRGB8WithScaling input_file 416 416 True >>= \case
-      Right (input_image, input_tensor) -> do
-        let input_data' = divScalar (255 :: Float) (hwc2chw $ toType Float input_tensor)
-            (outs,out) = forwardDarknet net' (Nothing, input_data')
-            outputs = nonMaxSuppression out 0.8 0.4
+--  valids' <- forM (valid datasets) $ \file -> do
+--    bboxes <- readBoundingBox $ toLabelPath file
+--    return (file,map (toXYXY 416 416 . rescale 640 480 416 416) bboxes)
+  
+  v <- forM (Prelude.take 3 (zip [0..] (makeBatch 16 $ valid datasets))) $ \(i,batch) -> do
+    imgs' <- forM batch $ \file -> do
+      bboxes <- readBoundingBox $ toLabelPath file
+      Main.readImage file 416 416 >>= \case
+        Right (width, height, _, input_tensor) -> do
+          return $ Just
+                   (map (toXYXY 416 416 . rescale width height 416 416) bboxes,
+                    divScalar (255 :: Float) $ toType Float $ hwc2chw input_tensor)
+        Left err -> return Nothing
+    let imgs = catMaybes imgs'
+        btargets = map fst imgs :: [[BBox]]
+        input_data = cat (Dim 0) $ map snd imgs :: Tensor
+        inferences = snd (forwardDarknet net' (Nothing, input_data))
+    print $ (i,shape inferences)
+    let boutputs = batchedNonMaxSuppression inferences 0.001 0.5
+    forM (zip btargets boutputs) $ \(targets,outputs)  -> do
         inference_bbox <- forM (zip [0..] outputs) $ \(i, output) -> do
           let [x0,y0,x1,y1,object_confidence,class_confidence,classid,ids] = asValue output :: [Float]
           return $ (BBox (round classid) x0 y0 x1 y1, object_confidence)
-        return $ computeTPForBBox 0.5 targets inference_bbox
-      Left err -> return []
-  print $ computeAPForBBox' (concat $ map snd valids)  (concat v)
+        return $ (computeTPForBBox 0.5 targets inference_bbox, targets)
+  let targets = concat $ map snd (concat v) :: [BBox]
+      inferences = concat $ map fst (concat v) :: [(BBox,(Confidence,TP))]
+--  print (length $ targets)
+--  print (map length inferences)
+  aps <- forM (computeAPForBBox' targets inferences) $ \(cid,(_,_,_,ap)) -> do
+    print (cid,ap)
+    return ap
+  print $ "mAP:" ++ show (Prelude.sum aps / fromIntegral (length aps))
 

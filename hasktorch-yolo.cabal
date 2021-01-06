@@ -66,6 +66,8 @@ executable yolov3-test
                      , safe-exceptions
                      , containers
                      , base
+  default-extensions:  Strict
+                     , StrictData
 
 test-suite spec
   type:               exitcode-stdio-1.0
