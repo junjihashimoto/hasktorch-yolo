@@ -134,7 +134,7 @@ readImage file width height =
 
 
 makeBatchedDatasets :: MonadIO m => Datasets -> Producer (Maybe (Int,[FilePath])) m ()
-makeBatchedDatasets datasets = loop (Prelude.take 6 $ zip [0..] (makeBatch 8 $ valid datasets))
+makeBatchedDatasets datasets = loop (zip [0..] (makeBatch 8 $ valid datasets))
   where
     loop [] = do
       yield Nothing
@@ -148,7 +148,9 @@ makeBatchedImages =
     Nothing -> do
       yield Nothing
     Just (i, batch) -> do
-      liftIO $ print (i,"readImage")
+      liftIO $ do
+        performGC
+        print (i,"readImage")
       imgs' <- liftIO $ forM batch $ \file -> do
         bboxes <- readBoundingBox $ toLabelPath file
         Main.readImage file 416 416 >>= \case
@@ -172,9 +174,12 @@ doInference net' = do
       yield Nothing
     Just (btargets,input_data) -> do
       liftIO $ print "start:inference"
-      inferences <- liftIO $ detach $ snd (forwardDarknet net' (Nothing, input_data))
+      inferences <- liftIO $ do
+        performGC
+        v <- detach $ snd (forwardDarknet net' (Nothing, input_data))
+        performGC
+        return v
       liftIO $ print "end:inference"
-      liftIO $ performGC
       yield $ Just (btargets,inferences)
       doInference net'
 
@@ -184,7 +189,9 @@ doNonMaxSuppression =
     Nothing -> do
       yield Nothing
     Just (btargets, inferences) -> do
-      liftIO $ print "nonMaxSuppression"
+      liftIO $ do
+        print "nonMaxSuppression"
+        performGC
       let boutputs = batchedNonMaxSuppression inferences 0.001 0.5
       forM_ (zip btargets boutputs) $ \(targets, outputs) -> do
         inference_bbox <- lift $ forM (zip [0 ..] outputs) $ \(i, output) -> do
@@ -248,7 +255,7 @@ main = do
       toOutput out0
 
   (out1, in1) <- spawn unbounded
-  w1 <- forM [1..3] $ \i ->
+  w1 <- forM [1..1] $ \i ->
     async $ do
       runEffect $
         fromInput in0  >->
@@ -264,7 +271,7 @@ main = do
         toOutput out2
 
   (out3, in3) <- spawn unbounded
-  w3 <- forM [1..2] $ \i ->
+  w3 <- forM [1..1] $ \i ->
     async $ do
       runEffect $
         fromInput in2  >->

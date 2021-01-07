@@ -46,7 +46,7 @@ library
 executable yolov3
   hs-source-dirs:      yolov3
   main-is:             Main.hs
-  ghc-options:         -fno-warn-partial-type-signatures -rtsopts
+  ghc-options:         -fno-warn-partial-type-signatures -rtsopts -threaded
   build-depends:       bytestring >= 0.10.8
                      , hasktorch-yolo
                      , hasktorch
@@ -58,7 +58,7 @@ executable yolov3
 executable yolov3-test
   hs-source-dirs:      yolov3-test
   main-is:             Main.hs
-  ghc-options:         -fno-warn-partial-type-signatures -rtsopts
+  ghc-options:         -fno-warn-partial-type-signatures -rtsopts -threaded
   build-depends:       bytestring >= 0.10.8
                      , hasktorch-yolo
                      , hasktorch
@@ -72,7 +72,7 @@ executable yolov3-test
 executable yolov3-pipelined-test
   hs-source-dirs:      yolov3-pipelined-test
   main-is:             Main.hs
-  ghc-options:         -fno-warn-partial-type-signatures -rtsopts
+  ghc-options:         -fno-warn-partial-type-signatures -rtsopts -threaded
   build-depends:       bytestring >= 0.10.8
                      , hasktorch-yolo
                      , hasktorch
