@@ -28,6 +28,11 @@ import Torch.Vision.Darknet.Spec
 
 main = hspec spec
 
+readFloatTensor :: FilePath -> [Int] -> IO Tensor
+readFloatTensor file shape =
+  System.IO.withFile file System.IO.ReadMode $ \h -> do
+    loadBinary h (zeros' shape)
+
 spec :: Spec
 spec = do
   describe "index accesses" $ do
@@ -123,7 +128,7 @@ spec = do
         )
         `shouldBe` [0.0, 0.0, 12.0, 0.0]
       (asValue v :: [Float]) `shouldBe` [0.0, 0.0, 0.0, 0.0]
-    it "Inference" $ do
+    it "Non max suppression" $ do
       mconfig <- readIniFile "config/yolov3.cfg"
       spec <- case mconfig of
         Right cfg@(DarknetConfig global layers) -> do
@@ -133,11 +138,9 @@ spec = do
         Left err -> throwIO $ userError err
       net <- sample spec
       net' <- loadWeights net "weights/yolov3.weights"
-      input_data <- System.IO.withFile "test-data/metrics/input-images.bin" System.IO.ReadMode $ \h -> do
-        loadBinary h (zeros' [1, 3, 416, 416])
+      input_data <- readFloatTensor "test-data/metrics/input-images.bin" [1, 3, 416, 416]
       shape (input_data) `shouldBe` [1, 3, 416, 416]
-      output_data0 <- System.IO.withFile "test-data/metrics/outputs.bin" System.IO.ReadMode $ \h -> do
-        loadBinary h (zeros' [432, 7])
+      output_data0 <- readFloatTensor "test-data/metrics/outputs.bin" [432, 7]
       shape (output_data0) `shouldBe` [432, 7]
       let outputs = nonMaxSuppression (snd (forwardDarknet net' (Nothing, input_data))) 0.001 0.5
       length (outputs) `shouldBe` 432
@@ -146,28 +149,21 @@ spec = do
       forM_ outputs $ \output -> do
         shape (output ! (Slice (0, 7))) `shouldBe` [7]
       length (outputs) `shouldBe` 432
-      --      print output_data0
-      --      print outputs
       forM_ (zip [0 ..] outputs) $ \(i, output) -> do
         asValue (mseLoss (output_data0 ! i) (output ! (Slice (0, 7)))) < (0.0001 :: Float) `shouldBe` True
     it "Inference" $ do
       mconfig <- readIniFile "config/yolov3.cfg"
       Right mconfig' <- readIniFile' "config/yolov3.cfg"
       outputChannels mconfig' 83 `shouldBe` Right 512
-      spec <- case mconfig of
-        Right cfg@(DarknetConfig global layers) -> do
-          length (toList layers) `shouldBe` 107
-          case toDarknetSpec cfg of
-            Right spec -> return spec
-            Left err -> throwIO $ userError err
-        Left err -> throwIO $ userError err
+      let Right cfg@(DarknetConfig global layers) = mconfig
+      length (toList layers) `shouldBe` 107
+      let Right spec = toDarknetSpec cfg
+
       net <- sample spec
       net' <- loadWeights net "weights/yolov3.weights"
-      input_data <- System.IO.withFile "test-data/yolov3/input_data.bin" System.IO.ReadMode $ \h -> do
-        loadBinary h (zeros' [1, 3, 416, 416])
+      input_data <- readFloatTensor "test-data/yolov3/input_data.bin" [1, 3, 416, 416]
       shape (input_data) `shouldBe` [1, 3, 416, 416]
-      output_data0 <- System.IO.withFile "test-data/yolov3/output_data0.bin" System.IO.ReadMode $ \h -> do
-        loadBinary h (zeros' [1, 32, 416, 416])
+      output_data0 <- readFloatTensor "test-data/yolov3/output_data0.bin" [1, 32, 416, 416]
       shape (output_data0) `shouldBe` [1, 32, 416, 416]
       let output = fst (forwardDarknet' 107 net' (Nothing, input_data))
       asValue (mseLoss output_data0 (output M.! 0)) < (0.0001 :: Float) `shouldBe` True
@@ -238,6 +234,20 @@ spec = do
       asValue (mseLoss otw (tw target)) < (0.0001 :: Float) `shouldBe` True
       asValue (mseLoss otcls (tcls target)) < (0.0001 :: Float) `shouldBe` True
       asValue (mseLoss otconf (tconf target)) < (0.0001 :: Float) `shouldBe` True
+    it "Loss with darknet" $ do
+      mconfig <- readIniFile "config/yolov3.cfg"
+      let Right cfg@(DarknetConfig global layers) = mconfig
+      length (toList layers) `shouldBe` 107
+      let Right spec = toDarknetSpec cfg
+      net <- sample spec
+      net' <- loadWeights net "weights/yolov3.weights"
+      imgs <- readFloatTensor "test-data/train/imgs.bin" [8,3,384,384]
+      targets <- readFloatTensor "test-data/train/targets.bin" [72,6]
+      exp_loss <- readFloatTensor "test-data/train/loss.bin" []
+      exp_outputs <- readFloatTensor "test-data/train/outputs.bin" [8,9072,85]
+      let loss = snd $ forwardDarknet net' (Just targets, imgs)
+          exp_outputs  = snd $ forwardDarknet net' (Nothing, imgs)
+      asValue (mseLoss exp_loss loss) < (0.0001 :: Float) `shouldBe` True
   describe "DarknetSpec-Resnet" $ do
     it "Inference" $ do
       mconfig <- readIniFile "config/resnet18.cfg"
@@ -250,8 +260,7 @@ spec = do
         Left err -> throwIO $ userError err
       net <- sample spec
       net' <- loadWeights net "weights/resnet18.weights"
-      input_data <- System.IO.withFile "test-data/resnet18/input0.bin" System.IO.ReadMode $ \h -> do
-        loadBinary h (zeros' [1, 3, 256, 256])
+      input_data <- readFloatTensor "test-data/resnet18/input0.bin" [1, 3, 256, 256]
       forM_ resnet_shapes $ \(i, exp_shape) -> do
         let output = fst (forwardDarknet' i net' (Nothing, input_data))
             shape' = shape (output M.! (i -1))
@@ -259,8 +268,7 @@ spec = do
           [] -> (i, []) `shouldBe` (i, exp_shape)
           _ -> do
             (i, shape') `shouldBe` (i, exp_shape)
-            output_data <- System.IO.withFile ("test-data/resnet18/output" ++ show (i -1) ++ ".bin") System.IO.ReadMode $ \h -> do
-              loadBinary h (zeros' exp_shape)
+            output_data <- readFloatTensor ("test-data/resnet18/output" ++ show (i -1) ++ ".bin") exp_shape
             let err_value = asValue (mseLoss output_data (output M.! (i -1))) :: Float
             when (err_value > (0.0001 :: Float)) $ do
               print output_data
