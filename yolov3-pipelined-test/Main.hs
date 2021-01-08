@@ -1,3 +1,4 @@
+{-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE ExtendedDefaultRules #-}
 {-# LANGUAGE LambdaCase #-}
@@ -123,14 +124,14 @@ makeBatch num_batch datasets =
         then a : []
         else a : makeBatch num_batch ax
 
-readImage :: FilePath -> Int -> Int -> IO (Either String (Int, Int, I.Image I.PixelRGB8, Tensor))
+readImage :: FilePath -> Int -> Int -> IO (Either String (Int, Int, Tensor))
 readImage file width height =
   I.readImage file >>= \case
     Left err -> return $ Left err
     Right img' -> do
       let rgb8 = I.convertRGB8 img'
           img = (resizeRGB8 width height True) rgb8
-      return $ Right (I.imageWidth rgb8, I.imageHeight rgb8, img, fromDynImage . I.ImageRGB8 $ img)
+      return $ Right (I.imageWidth rgb8, I.imageHeight rgb8, fromDynImage . I.ImageRGB8 $ img)
 
 
 makeBatchedDatasets :: MonadIO m => Datasets -> Producer (Maybe (Int,[FilePath])) m ()
@@ -154,7 +155,7 @@ makeBatchedImages =
       imgs' <- liftIO $ forM batch $ \file -> do
         bboxes <- readBoundingBox $ toLabelPath file
         Main.readImage file 416 416 >>= \case
-          Right (width, height, _, input_tensor) -> do
+          Right (width, height, input_tensor) -> do
             return $
               Just
                 ( map (toXYXY 416 416 . rescale width height 416 416) bboxes,
@@ -164,7 +165,8 @@ makeBatchedImages =
       let imgs = catMaybes imgs'
           btargets = map fst imgs :: [[BBox]]
           input_data = cat (Dim 0) $ map snd imgs :: Tensor
-      yield $ Just (btargets,input_data)
+      v <- liftIO $ detach input_data
+      yield $ Just (btargets,v)
       makeBatchedImages
 
 doInference :: MonadIO m => Darknet -> Pipe (Maybe ([[BBox]],Tensor)) (Maybe ([[BBox]],Tensor)) m ()
@@ -176,9 +178,7 @@ doInference net' = do
       liftIO $ print "start:inference"
       inferences <- liftIO $ do
         performGC
-        v <- detach $ snd (forwardDarknet net' (Nothing, input_data))
-        performGC
-        return v
+        detach $ snd (forwardDarknet net' (Nothing, input_data))
       liftIO $ print "end:inference"
       yield $ Just (btargets,inferences)
       doInference net'
@@ -189,15 +189,14 @@ doNonMaxSuppression =
     Nothing -> do
       yield Nothing
     Just (btargets, inferences) -> do
-      liftIO $ do
-        print "nonMaxSuppression"
-        performGC
+      liftIO $ print "nonMaxSuppression"
       let boutputs = batchedNonMaxSuppression inferences 0.001 0.5
       forM_ (zip btargets boutputs) $ \(targets, outputs) -> do
-        inference_bbox <- lift $ forM (zip [0 ..] outputs) $ \(i, output) -> do
-          let [x0, y0, x1, y1, object_confidence, class_confidence, classid, ids] = asValue output :: [Float]
+        !inference_bbox <- lift $ forM outputs $ \output -> do
+          let [!x0, !y0, !x1, !y1, !object_confidence, !class_confidence, !classid, !ids] = asValue output :: [Float]
           return $ (BBox (round classid) x0 y0 x1 y1, object_confidence)
-        yield $ Just (computeTPForBBox 0.5 targets inference_bbox, targets)
+        let !comp = (computeTPForBBox 0.5 targets inference_bbox,targets)
+        yield $ Just comp
       doNonMaxSuppression        
 
 type Ret = [([(BBox, (Confidence, TP))],[BBox])]
@@ -207,8 +206,7 @@ maybeToList = loop
   where
     loop = do
       await >>= \case
-        Just x -> do
-          -- liftIO $ print "write"
+        Just !x -> do
           tell [x]
           loop
         Nothing -> return ()
@@ -248,13 +246,13 @@ main = do
     doNonMaxSuppression >->
     maybeToList
 -}
-  (out0, in0) <- spawn unbounded
+  (out0, in0) <- spawn $ bounded 5
   w0 <- async $ do
     runEffect $
       makeBatchedDatasets datasets >->
       toOutput out0
 
-  (out1, in1) <- spawn unbounded
+  (out1, in1) <- spawn $ bounded 5
   w1 <- forM [1..1] $ \i ->
     async $ do
       runEffect $
@@ -262,7 +260,7 @@ main = do
         makeBatchedImages >->
         toOutput out1
 
-  (out2, in2) <- spawn unbounded
+  (out2, in2) <- spawn $ bounded 2
   w2 <- forM [1..1] $ \i ->
     async $ do
       runEffect $
@@ -270,7 +268,7 @@ main = do
         doInference net' >->
         toOutput out2
 
-  (out3, in3) <- spawn unbounded
+  (out3, in3) <- spawn $ bounded 2
   w3 <- forM [1..1] $ \i ->
     async $ do
       runEffect $

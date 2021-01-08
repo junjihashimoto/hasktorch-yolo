@@ -6,6 +6,7 @@
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE BangPatterns #-}
 
 module Torch.Vision.Darknet.Forward where
 
@@ -27,7 +28,6 @@ import Torch.Tensor as D
 import Torch.TensorFactories
 --import Torch.Typed.NN (HasForward (..))
 import qualified Torch.Vision.Darknet.Spec as S
-import Debug.Trace
 
 type Index = Int
 
@@ -583,11 +583,10 @@ forwardDarknet' depth (Darknet layers) (train, input) = loop depth layers empty 
   where
     loop :: Int -> [(Index, Layer)] -> (Map Index Tensor) -> [Tensor] -> ((Map Index Tensor), Tensor)
     loop 0 _ maps tensors = (maps, D.cat (D.Dim 1) (reverse tensors))
-    loop _ [] maps tensors = (maps, D.cat (D.Dim 1) (reverse tensors))
-    loop n ((idx, layer) : next) layerOutputs yoloOutputs =
+    loop _ [] !maps !tensors = (maps, D.cat (D.Dim 1) (reverse tensors))
+    loop !n !((idx, layer) : next) !layerOutputs !yoloOutputs =
       let input' = (if idx == 0 then input else layerOutputs M.! (idx -1))
-       in --       in case (trace (show idx ++ "\n" ++ show (D.shape input') ++ "\n") layer) of
-          case layer of
+       in case layer of
             LConvolution s ->
               let out = forward s input'
                in loop (n -1) next (insert idx out layerOutputs) yoloOutputs
@@ -677,7 +676,7 @@ toDetection prediction conf_thres =
     ids = (D.reshape [1, n] $ (arange' (0 :: Int) n (1 :: Int))) ! indexes
     offset_class = 5
     mprediction' = prediction' ! (Ellipsis, Slice (offset_class, None))
-        
+
 nonMaxSuppression ::
   Tensor ->
   Float ->
@@ -725,3 +724,4 @@ getTensorFromDarknet :: Darknet -> (Int -> Layer -> IO (Maybe Tensor)) -> IO [Te
 getTensorFromDarknet (Darknet darknet) func = do
   v <- forM darknet $ \(i, layer) -> func i layer
   return $ catMaybes v
+

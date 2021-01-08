@@ -1,4 +1,5 @@
 {-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE ExtendedDefaultRules #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE RecordWildCards #-}
@@ -11,6 +12,8 @@ import Control.Monad (forM)
 import Data.List (maximumBy, sort, sortBy)
 import Data.List.Split
 import qualified Data.Set as S
+import GHC.Generics
+import Control.DeepSeq
 
 type Recall = Float
 
@@ -42,7 +45,7 @@ data BBox = BBox
     x1 :: Float,
     y1 :: Float
   }
-  deriving (Show, Eq)
+  deriving (Show, Eq, Generic, NFData)
 
 readBoundingBox :: FilePath -> IO [BoundingBox]
 readBoundingBox file = do
@@ -108,6 +111,7 @@ bboxIou (BBox _ b0_x0 b0_y0 b0_x1 b0_y1) (BBox _ b1_x0 b1_y0 b1_x1 b1_y1) =
    in inter_area / sum'
 
 computeTPForBBox :: Float -> [BBox] -> [(BBox, Confidence)] -> [(BBox, (Confidence, TP))]
+computeTPForBBox _ [] _ = []
 computeTPForBBox iou_thresh targets inference_bbox = loop S.empty inference_bbox
   where
     targets' = zip [0 ..] targets :: [(Int, BBox)]
@@ -127,6 +131,7 @@ computeTPForBBox iou_thresh targets inference_bbox = loop S.empty inference_bbox
                     else (bbox, (conf, True)) : loop (S.insert id' used_targets) other
 
 computeAPForBBox' :: [BBox] -> [(BBox, (Confidence, TP))] -> [(ClassID, (Recall, Precision, F1, Ap))]
+computeAPForBBox' [] _ = []
 computeAPForBBox' targets tp = map func classes
   where
     classes = S.toList $ S.fromList $ map classid targets
@@ -136,6 +141,7 @@ computeAPForBBox' targets tp = map func classes
        in (cls, computeAP (map snd tp') n_gt)
 
 computeAPForBBox :: Float -> [BBox] -> [(BBox, Confidence)] -> [(ClassID, (Recall, Precision, F1, Ap))]
+computeAPForBBox _ [] _ = []
 computeAPForBBox iou_thresh targets inference_bbox = map func classes
   where
     classes = S.toList $ S.fromList $ map classid targets

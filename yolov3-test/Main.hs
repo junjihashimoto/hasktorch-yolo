@@ -1,3 +1,4 @@
+{-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE ExtendedDefaultRules #-}
 {-# LANGUAGE LambdaCase #-}
@@ -8,6 +9,7 @@
 module Main where
 
 import qualified Codec.Picture as I
+import Control.DeepSeq
 import Control.Exception.Safe
 import Control.Monad (foldM, forM, forM_, when)
 import qualified Data.Map as M
@@ -115,14 +117,14 @@ makeBatch num_batch datasets =
         then a : []
         else a : makeBatch num_batch ax
 
-readImage :: FilePath -> Int -> Int -> IO (Either String (Int, Int, I.Image I.PixelRGB8, Tensor))
+readImage :: FilePath -> Int -> Int -> IO (Either String (Int, Int, Tensor))
 readImage file width height =
   I.readImage file >>= \case
     Left err -> return $ Left err
     Right img' -> do
       let rgb8 = I.convertRGB8 img'
           img = (resizeRGB8 width height True) rgb8
-      return $ Right (I.imageWidth rgb8, I.imageHeight rgb8, img, fromDynImage . I.ImageRGB8 $ img)
+      return $ Right (I.imageWidth rgb8, I.imageHeight rgb8, fromDynImage . I.ImageRGB8 $ img)
 
 main = do
   args <- getArgs
@@ -147,15 +149,13 @@ main = do
 
   datasets <-
     readDatasets datasets_file >>= \case
-      Right (cfg :: Datasets) -> return cfg
+      Right (cfg) -> return cfg
       Left err -> throwIO $ userError err
-
---  v <- forM (Prelude.drop 149 (zip [0 ..] (makeBatch 16 $ valid datasets))) $ \(i, batch) -> do
-  v <- forM ((zip [0 ..] (makeBatch 16 $ valid datasets))) $ \(i, batch) -> do
+  v <- forM (zip [0 ..] (makeBatch 16 $ valid datasets)) $ \(i, batch) -> do
     imgs' <- forM batch $ \file -> do
       bboxes <- readBoundingBox $ toLabelPath file
       Main.readImage file 416 416 >>= \case
-        Right (width, height, _, input_tensor) -> do
+        Right (width, height, input_tensor) -> do
           return $
             Just
               ( map (toXYXY 416 416 . rescale width height 416 416) bboxes,
@@ -165,15 +165,16 @@ main = do
     let imgs = catMaybes imgs'
         btargets = map fst imgs :: [[BBox]]
         input_data = cat (Dim 0) $ map snd imgs :: Tensor
-    inferences <- detach $ snd (forwardDarknet net' (Nothing, input_data))
+    inferences <- detach $ snd $ forwardDarknet net' (Nothing, input_data)
     performGC
     print $ (i, shape inferences)
     let boutputs = batchedNonMaxSuppression inferences 0.001 0.5
-    forM (zip btargets boutputs) $ \(targets, outputs) -> do
-      inference_bbox <- forM (zip [0 ..] outputs) $ \(i, output) -> do
-        let [x0, y0, x1, y1, object_confidence, class_confidence, classid, ids] = asValue output :: [Float]
+    forM (zip btargets boutputs) $ \(!targets, !outputs) -> do
+      !inference_bbox <- forM (zip [0 ..] outputs) $ \(i, output) -> do
+        let [!x0, !y0, !x1, !y1, !object_confidence, !class_confidence, !classid, !ids] = asValue output :: [Float]
         return $ (BBox (round classid) x0 y0 x1 y1, object_confidence)
-      return $ (computeTPForBBox 0.5 targets inference_bbox, targets)
+      let !comp = (computeTPForBBox 0.5 targets inference_bbox, targets)
+      return comp
   let targets = concat $ map snd (concat v) :: [BBox]
       inferences = concat $ map fst (concat v) :: [(BBox, (Confidence, TP))]
   aps <- forM (computeAPForBBox' targets inferences) $ \(cid, (_, _, _, ap)) -> do
