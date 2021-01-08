@@ -1,3 +1,4 @@
+{-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DuplicateRecordFields #-}
@@ -6,7 +7,6 @@
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE BangPatterns #-}
 
 module Torch.Vision.Darknet.Forward where
 
@@ -165,8 +165,8 @@ instance HasForward Route (Map Int Tensor) Tensor where
 data ShortCut = ShortCut
   { from :: Int,
     isLeaky :: Bool
---    shortCutWeight :: Tensor,
---    shortCutBias :: Tensor
+    --    shortCutWeight :: Tensor,
+    --    shortCutBias :: Tensor
   }
   deriving (Show, Generic, Parameterized)
 
@@ -182,25 +182,25 @@ instance HasForward ShortCut (Tensor, Map Int Tensor) Tensor where
         shortcut = inputs M.! from
         [_, c1, x1, y1] = D.shape shortcut
         activation = if isLeaky then flip I.leaky_relu 0.1 else id
-    in if c0 == c1 && x0 == x1 && y0 == y1
-       then activation $ input + shortcut
-       else
-         let stride = if x1 < x0 then 1 else x1 `div` x0
-             zero2d :: Int -> [[Float]]
-             zero2d n = replicate n $ replicate n 0
-             one2d :: Int -> [[Float]]
-             one2d n = (1 : replicate (n -1) 0) : (replicate (n -1) $ replicate n 0)
-             weight :: [[[[Float]]]]
-             weight = do
-               o <- [0 .. (c0 -1)]
-               return $ do
-                 i <- [0 .. (c1 -1)]
-                 if o == i
-                   then return $ one2d stride
-                   else return $ zero2d stride
-             dev = device input
-             weight' = _toDevice dev $ asTensor weight
-          in activation $ input + D.conv2d' weight' (_toDevice dev $ zeros' [c0]) (stride, stride) (0, 0) shortcut
+     in if c0 == c1 && x0 == x1 && y0 == y1
+          then activation $ input + shortcut
+          else
+            let stride = if x1 < x0 then 1 else x1 `div` x0
+                zero2d :: Int -> [[Float]]
+                zero2d n = replicate n $ replicate n 0
+                one2d :: Int -> [[Float]]
+                one2d n = (1 : replicate (n -1) 0) : (replicate (n -1) $ replicate n 0)
+                weight :: [[[[Float]]]]
+                weight = do
+                  o <- [0 .. (c0 -1)]
+                  return $ do
+                    i <- [0 .. (c1 -1)]
+                    if o == i
+                      then return $ one2d stride
+                      else return $ zero2d stride
+                dev = device input
+                weight' = _toDevice dev $ asTensor weight
+             in activation $ input + D.conv2d' weight' (_toDevice dev $ zeros' [c0]) (stride, stride) (0, 0) shortcut
   forwardStoch f a = pure $ forward f a
 
 type Anchors = [(Float, Float)]
@@ -654,22 +654,22 @@ toDetection ::
   Maybe Tensor
 toDetection prediction conf_thres =
   if head (shape mprediction') == 0
-  then Nothing
-  else
-    let (values, indices) = D.maxDim (D.Dim (-1)) D.RemoveDim mprediction'
-        list_of_detections =
-          [ prediction' ! (Ellipsis, Slice (0, 5)),
-            D.stack
-              (D.Dim (-1))
-              [ values,
-                indices,
-                ids
-              ]
-          ]
-        detections = D.cat (D.Dim (-1)) list_of_detections
-        score = prediction' ! (Ellipsis, 4) * values
-        detections' = detections ! (I.argsort score (-1) True)
-     in Just detections'
+    then Nothing
+    else
+      let (values, indices) = D.maxDim (D.Dim (-1)) D.RemoveDim mprediction'
+          list_of_detections =
+            [ prediction' ! (Ellipsis, Slice (0, 5)),
+              D.stack
+                (D.Dim (-1))
+                [ values,
+                  indices,
+                  ids
+                ]
+            ]
+          detections = D.cat (D.Dim (-1)) list_of_detections
+          score = prediction' ! (Ellipsis, 4) * values
+          detections' = detections ! (I.argsort score (-1) True)
+       in Just detections'
   where
     indexes = ((prediction ! (Ellipsis, 4)) `D.ge` asTensor conf_thres)
     prediction' = xywh2xyxy $ prediction ! indexes
@@ -725,4 +725,3 @@ getTensorFromDarknet :: Darknet -> (Int -> Layer -> IO (Maybe Tensor)) -> IO [Te
 getTensorFromDarknet (Darknet darknet) func = do
   v <- forM darknet $ \(i, layer) -> func i layer
   return $ catMaybes v
-

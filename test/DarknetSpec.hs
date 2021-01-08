@@ -188,7 +188,7 @@ spec = do
       let output' = snd (forwardDarknet net' (Nothing, input_data))
           amax = argmax (Dim 2) RemoveDim (output' ! (Slice (), Slice (), Slice (5, None)))
           conf = output' ! (Slice (), Slice (), 4)
-          Just detections' = (toDetection output' 0.8) 
+          Just detections' = (toDetection output' 0.8)
           detections = detections' ! (Ellipsis, Slice (0, 7))
           objects = map (\obj -> obj ! (Ellipsis, Slice (0, 7))) $ nonMaxSuppression output' 0.8 0.4
       shape output' `shouldBe` [1, 10647, 85]

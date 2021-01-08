@@ -1,5 +1,5 @@
-{-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DeriveAnyClass #-}
+{-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE ExtendedDefaultRules #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE RecordWildCards #-}
@@ -7,13 +7,13 @@
 
 module Torch.Vision.Metrics where
 
+import Control.DeepSeq
 import Control.Exception.Safe (tryIO)
 import Control.Monad (forM)
 import Data.List (maximumBy, sort, sortBy)
 import Data.List.Split
 import qualified Data.Set as S
 import GHC.Generics
-import Control.DeepSeq
 
 type Recall = Float
 
