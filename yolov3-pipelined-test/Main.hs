@@ -148,7 +148,7 @@ makeBatchedImages =
   await >>= \case
     Nothing -> do
       yield Nothing
-    Just (i, batch) -> do
+    Just (!i, !batch) -> do
       liftIO $ do
         performGC
         print (i,"readImage")
@@ -165,8 +165,7 @@ makeBatchedImages =
       let imgs = catMaybes imgs'
           btargets = map fst imgs :: [[BBox]]
           input_data = cat (Dim 0) $ map snd imgs :: Tensor
-      v <- liftIO $ detach input_data
-      yield $ Just (btargets,v)
+      yield $ Just (btargets, input_data)
       makeBatchedImages
 
 doInference :: MonadIO m => Darknet -> Pipe (Maybe ([[BBox]],Tensor)) (Maybe ([[BBox]],Tensor)) m ()
@@ -174,7 +173,7 @@ doInference net' = do
   await >>= \case
     Nothing -> do
       yield Nothing
-    Just (btargets,input_data) -> do
+    Just (!btargets,!input_data) -> do
       liftIO $ print "start:inference"
       inferences <- liftIO $ do
         performGC
@@ -188,15 +187,15 @@ doNonMaxSuppression =
   await >>= \case
     Nothing -> do
       yield Nothing
-    Just (btargets, inferences) -> do
+    Just (!btargets, !inferences) -> do
       liftIO $ print "nonMaxSuppression"
       let boutputs = batchedNonMaxSuppression inferences 0.001 0.5
-      forM_ (zip btargets boutputs) $ \(targets, outputs) -> do
-        !inference_bbox <- lift $ forM outputs $ \output -> do
-          let [!x0, !y0, !x1, !y1, !object_confidence, !class_confidence, !classid, !ids] = asValue output :: [Float]
-          return $ (BBox (round classid) x0 y0 x1 y1, object_confidence)
-        let !comp = (computeTPForBBox 0.5 targets inference_bbox,targets)
-        yield $ Just comp
+          v = flip map (zip btargets boutputs) $ \(!targets, !outputs) ->
+            let inference_bbox = flip map outputs $ \output ->
+                  let [!x0, !y0, !x1, !y1, !object_confidence, !class_confidence, !classid, !ids] = asValue output :: [Float]
+                  in (BBox (round classid) x0 y0 x1 y1, object_confidence)
+             in Just (computeTPForBBox 0.5 targets inference_bbox,targets)
+      each v
       doNonMaxSuppression        
 
 type Ret = [([(BBox, (Confidence, TP))],[BBox])]
@@ -210,6 +209,17 @@ maybeToList = loop
           tell [x]
           loop
         Nothing -> return ()
+
+saveResult :: MonadIO m => Consumer (Maybe ([(BBox, (Confidence, TP))],[BBox])) m ()
+saveResult = loop
+  where
+    loop = do
+      await >>= \case
+        Just !x -> do
+          liftIO $ appendFile "results.txt" (show x)
+          loop
+        Nothing -> return ()
+
 
 
 main = do
@@ -238,21 +248,21 @@ main = do
       Right (cfg :: Datasets) -> return cfg
       Left err -> throwIO $ userError err
 
-{-
+
   v <- execWriterT $ runEffect $
     makeBatchedDatasets datasets >->
     makeBatchedImages >->
     doInference net' >->
     doNonMaxSuppression >->
     maybeToList
--}
-  (out0, in0) <- spawn $ bounded 5
+{-
+  (out0, in0) <- spawn $ bounded 1
   w0 <- async $ do
     runEffect $
       makeBatchedDatasets datasets >->
       toOutput out0
 
-  (out1, in1) <- spawn $ bounded 5
+  (out1, in1) <- spawn $ bounded 1
   w1 <- forM [1..1] $ \i ->
     async $ do
       runEffect $
@@ -260,7 +270,7 @@ main = do
         makeBatchedImages >->
         toOutput out1
 
-  (out2, in2) <- spawn $ bounded 2
+  (out2, in2) <- spawn $ bounded 1
   w2 <- forM [1..1] $ \i ->
     async $ do
       runEffect $
@@ -268,19 +278,12 @@ main = do
         doInference net' >->
         toOutput out2
 
-  (out3, in3) <- spawn $ bounded 2
-  w3 <- forM [1..1] $ \i ->
-    async $ do
-      runEffect $
-        fromInput in2  >->
-        doNonMaxSuppression >->
-        toOutput out3
-
   v <- execWriterT $ runEffect $
-      fromInput in3 >->
+      fromInput in2 >->
+      doNonMaxSuppression >->
       maybeToList
-
-  mapM_ wait ([w0] ++ w1 ++ w2 ++ w3)
+  mapM_ wait ([w0] ++ w1 ++ w2)
+-}
 
   let targets = concat $ map snd v :: [BBox]
       inferences = concat $ map fst v :: [(BBox, (Confidence, TP))]
