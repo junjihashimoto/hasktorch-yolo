@@ -32,6 +32,7 @@ import Pipes.Concurrent
 import Control.Concurrent.Async (async, wait)
 import Control.Concurrent (threadDelay)
 import Control.Monad.Writer.Lazy
+import System.Environment
 
 labels :: [String]
 labels =
