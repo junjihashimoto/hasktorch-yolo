@@ -310,12 +310,13 @@ toPredBox ::
   (Tensor, Tensor, Tensor, Tensor)
 toPredBox Yolo {..} prediction stride =
   let input = fromPrediction prediction
+      dev = device input
       grid_size = D.size 2 input
       scaled_anchors = toScaledAnchors anchors stride
-      anchor_w = toAnchorW scaled_anchors
-      anchor_h = toAnchorH scaled_anchors
-   in ( toX prediction + gridX grid_size,
-        toY prediction + gridY grid_size,
+      anchor_w = _toDevice dev $ toAnchorW scaled_anchors
+      anchor_h = _toDevice dev $ toAnchorH scaled_anchors
+   in ( toX prediction + _toDevice dev (gridX grid_size),
+        toY prediction + _toDevice dev (gridY grid_size),
         D.exp (toW prediction) * anchor_w,
         D.exp (toH prediction) * anchor_h
       )

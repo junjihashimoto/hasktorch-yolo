@@ -135,7 +135,7 @@ readImage file width height =
 
 
 makeBatchedDatasets :: MonadIO m => Datasets -> Producer (Maybe (Int,[FilePath])) m ()
-makeBatchedDatasets datasets = loop (zip [0..] (makeBatch 8 $ valid datasets))
+makeBatchedDatasets datasets = loop (zip [0..] (makeBatch 16 $ valid datasets))
   where
     loop [] = do
       yield Nothing
@@ -143,44 +143,47 @@ makeBatchedDatasets datasets = loop (zip [0..] (makeBatch 8 $ valid datasets))
       yield (Just x)
       loop xs
 
-makeBatchedImages :: MonadIO m => Pipe (Maybe (Int,[FilePath])) (Maybe ([[BBox]],Tensor)) m ()
-makeBatchedImages =
-  await >>= \case
-    Nothing -> do
-      yield Nothing
-    Just (!i, !batch) -> do
-      liftIO $ do
-        performGC
-        print (i,"readImage")
-      imgs' <- liftIO $ forM batch $ \file -> do
-        bboxes <- readBoundingBox $ toLabelPath file
-        Main.readImage file 416 416 >>= \case
-          Right (width, height, input_tensor) -> do
-            return $
-              Just
-                ( map (toXYXY 416 416 . rescale width height 416 416) bboxes,
-                  divScalar (255 :: Float) $ toType Float $ hwc2chw input_tensor
-                )
-          Left err -> return Nothing
-      let imgs = catMaybes imgs'
-          btargets = map fst imgs :: [[BBox]]
-          input_data = cat (Dim 0) $ map snd imgs :: Tensor
-      yield $ Just (btargets, input_data)
-      makeBatchedImages
+makeBatchedImages :: MonadIO m => Device -> Pipe (Maybe (Int,[FilePath])) (Maybe ([[BBox]],Tensor)) m ()
+makeBatchedImages device = loop
+  where
+    loop = await >>= \case
+      Nothing -> do
+        yield Nothing
+      Just (!i, !batch) -> do
+        liftIO $ do
+          performGC
+          print (i,"readImage")
+        imgs' <- liftIO $ forM batch $ \file -> do
+          bboxes <- readBoundingBox $ toLabelPath file
+          Main.readImage file 416 416 >>= \case
+            Right (width, height, input_tensor) -> do
+              return $
+                Just
+                  ( map (toXYXY 416 416 . rescale width height 416 416) bboxes,
+                    divScalar (255 :: Float) $ toType Float $ hwc2chw input_tensor
+                  )
+            Left err -> return Nothing
+        let imgs = catMaybes imgs'
+            btargets = map fst imgs :: [[BBox]]
+            input_data = cat (Dim 0) $ map snd imgs :: Tensor
+        yield $ Just (btargets, _toDevice device input_data)
+        loop
 
 doInference :: MonadIO m => Darknet -> Pipe (Maybe ([[BBox]],Tensor)) (Maybe ([[BBox]],Tensor)) m ()
-doInference net' = do
-  await >>= \case
-    Nothing -> do
-      yield Nothing
-    Just (!btargets,!input_data) -> do
-      liftIO $ print "start:inference"
-      inferences <- liftIO $ do
-        performGC
-        detach $ snd (forwardDarknet net' (Nothing, input_data))
-      liftIO $ print "end:inference"
-      yield $ Just (btargets,inferences)
-      doInference net'
+doInference net' = loop
+  where
+    loop = do
+      await >>= \case
+        Nothing -> do
+          yield Nothing
+        Just (!btargets,!input_data) -> do
+          liftIO $ print "start:inference"
+          inferences <- liftIO $ do
+            performGC
+            detach $ toCPU $ snd (forwardDarknet net' (Nothing, input_data))
+          liftIO $ print "end:inference"
+          yield $ Just (btargets,inferences)
+          loop
 
 doNonMaxSuppression :: MonadIO m => Pipe (Maybe ([[BBox]],Tensor)) (Maybe ([(BBox, (Confidence, TP))],[BBox])) m ()
 doNonMaxSuppression =
@@ -229,10 +232,13 @@ main = do
   let config_file = args !! 0
       weight_file = args !! 1
       datasets_file = args !! 2
-      device = Device CUDA 0
-      toDev = _toDevice device
-      toHost = _toDevice (Device CPU 0)
-
+  deviceStr <- try (getEnv "DEVICE") :: IO (Either SomeException String)
+  let device = case deviceStr of
+        Right "cpu" -> Device CPU 0
+        Right "cuda:0" -> Device CUDA 0
+        Right device -> error $ "Unknown device setting: " ++ device
+        _ -> Device CPU 0
+  
   spec <-
     readIniFile config_file >>= \case
       Right cfg@(DarknetConfig global layers) -> do
@@ -241,7 +247,7 @@ main = do
           Left err -> throwIO $ userError err
       Left err -> throwIO $ userError err
   net <- sample spec
-  net' <- loadWeights net weight_file
+  net' <- toDevice device <$> loadWeights net weight_file
 
   datasets <-
     readDatasets datasets_file >>= \case
@@ -251,7 +257,7 @@ main = do
 
   v <- execWriterT $ runEffect $
     makeBatchedDatasets datasets >->
-    makeBatchedImages >->
+    makeBatchedImages device >->
     doInference net' >->
     doNonMaxSuppression >->
     maybeToList
