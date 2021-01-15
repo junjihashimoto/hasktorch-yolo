@@ -29,17 +29,10 @@ import Torch.TensorFactories
 --import Torch.Typed.NN (HasForward (..))
 import qualified Torch.Vision.Darknet.Spec as S
 import Debug.Trace
-import System.IO.Unsafe
-
-detach' :: Tensor -> Tensor
-detach' = unsafePerformIO . D.detach
 
 trace' :: Show a => String -> a -> a
 -- trace' b a = trace (b++":"++ show a) a
 trace' b a = a
-
-trace'' :: Show a => String -> a -> b -> b
-trace'' b a c = trace (b++":"++ show a) c
 
 type Index = Int
 
@@ -424,8 +417,8 @@ toBuildTargets
         -- (anchors,batch)
         ious_list = map (\[anchor_w,anchor_h] -> bboxWhIou (anchor_w,anchor_h) (gw, gh)) $ (asValue anchors :: [[Float]])
         ious = D.transpose (D.Dim 0) (D.Dim 1) $ D.stack (D.Dim 0) ious_list
-        (best_ious, best_n) = trace' "best_n" $ I.maxDim ious (-1) False
-        best_n_anchor = (trace' "anchors" anchors) ! best_n
+        (best_ious, best_n) = I.maxDim ious (-1) False
+        best_n_anchor = anchors ! best_n
         b = toType D.Int64 $ squeezeLastDim $ D.slice (-1) 0 1 1 target
         target_labels = toType D.Int64 $ squeezeLastDim $ D.slice (-1) 1 2 1 target
         obj_mask =
@@ -462,7 +455,7 @@ toBuildTargets
           maskedFill
             (zeros' [nB, nA, nG, nG])
             (b, best_n, gj, gi)
-            (I.log ((trace' "gw" gw) / (trace' "best_n_anchor" $ best_n_anchor ! (Ellipsis,0)) + 1e-16))
+            (I.log (gw / (best_n_anchor ! (Ellipsis,0)) + 1e-16))
         th =
           maskedFill
             (zeros' [nB, nA, nG, nG])
@@ -486,16 +479,16 @@ totalLoss :: Yolo -> Prediction -> Target -> Tensor
 totalLoss yolo prediction Target {..} =
   let x = toX prediction
       y = toY prediction
-      w = trace' "w" $ toW prediction
+      w = toW prediction
       h = toH prediction
       pred_conf = toPredConf prediction
       pred_cls = toPredClass prediction
       omask t = t ! obj_mask
       nmask t = t ! noobj_mask
-      loss_x = trace' "loss_x" $ D.mseLoss (omask tx) (omask x)
-      loss_y = trace' "loss_y" $ D.mseLoss (omask ty) (omask y)
-      loss_w = trace' "loss_w" $ D.mseLoss (omask (trace' "tw" tw)) (omask w)
-      loss_h = trace' "loss_h" $ D.mseLoss (omask th) (omask h)
+      loss_x = D.mseLoss (omask tx) (omask x)
+      loss_y = D.mseLoss (omask ty) (omask y)
+      loss_w = D.mseLoss (omask (trace' "tw" tw)) (omask w)
+      loss_h = D.mseLoss (omask th) (omask h)
       bceLoss a b = D.binaryCrossEntropyLoss' a b
       loss_conf_obj = bceLoss (omask tconf) (omask pred_conf)
       loss_conf_noobj = bceLoss (nmask tconf) (nmask pred_conf)
@@ -519,11 +512,11 @@ data YoloOutput = YoloOutput
 instance HasForward Yolo (Maybe Tensor, Tensor) Tensor where
   forwardStoch f a = pure $ forward f a
   forward yolo@Yolo {..} (train, input) =
-    let num_samples = D.size 0 $ trace' "yolo:input" $ input
+    let num_samples = D.size 0 input
         grid_size = D.size 2 input
         stride = (fromIntegral img_size) / (fromIntegral grid_size) :: Float
         prediction = toPrediction yolo input
-        (pred_boxes, scaled_anchors) = trace' "pred_boxes" $ toPredBox yolo prediction stride
+        (pred_boxes, scaled_anchors) = toPredBox yolo prediction stride
         (px, py, pw, ph) = pred_boxes
         pred_cls = toPredClass prediction
         pred_conf = toPredConf prediction
@@ -540,7 +533,7 @@ instance HasForward Yolo (Maybe Tensor, Tensor) Tensor where
             let ignore_thres = 0.5
                 build_target = toBuildTargets pred_boxes pred_cls target scaled_anchors ignore_thres
                 loss = totalLoss yolo prediction build_target
-             in trace' "loss" $ loss
+             in loss
 
 data Layer
   = LConvolution Convolution
