@@ -93,9 +93,10 @@ test-suite spec
   type:               exitcode-stdio-1.0
   hs-source-dirs:     test
   main-is:            Spec.hs
-  other-modules:      MetricsSpec
-                    , DarknetSpec
-                    , ImageSpec
+  other-modules:      TrainingSpec
+--                    , MetricsSpec
+--                    , DarknetSpec
+--                    , ImageSpec
   ghc-options:         -fno-warn-partial-type-signatures -rtsopts=all
   build-depends:      base >= 4.7 && < 5
                     , hasktorch

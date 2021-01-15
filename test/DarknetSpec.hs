@@ -103,7 +103,7 @@ spec = do
             Left err -> throwIO $ userError err
         Left err -> throwIO $ userError err
     it "Yolo:prediction" $ do
-      let yolo = Torch.Vision.Darknet.Forward.Yolo [(23, 27), (37, 58), (81, 82)] 80 418
+      let yolo = Torch.Vision.Darknet.Forward.Yolo (asTensor [[23::Float, 27], [37, 58], [81, 82]]) 80 418
           pred = toPrediction yolo (ones' [1, 255, 10, 10])
       shape (fromPrediction pred) `shouldBe` [1, 3, 10, 10, 85]
       shape (toX pred) `shouldBe` [1, 3, 10, 10]
@@ -112,8 +112,8 @@ spec = do
       shape (gridX 3) `shouldBe` [1, 1, 3, 3]
       (asValue (gridX 3) :: [[[[Float]]]]) `shouldBe` [[[[0.0, 1.0, 2.0], [0.0, 1.0, 2.0], [0.0, 1.0, 2.0]]]]
       (asValue (gridY 3) :: [[[[Float]]]]) `shouldBe` [[[[0.0, 0.0, 0.0], [1.0, 1.0, 1.0], [2.0, 2.0, 2.0]]]]
-      let scaled_anchors = toScaledAnchors [(81, 82), (135, 169)] (480.0 / 15.0)
-      scaled_anchors `shouldBe` [(2.53125, 2.5625), (4.21875, 5.28125)]
+      let scaled_anchors = toScaledAnchors (asTensor [[81 :: Float, 82], [135, 169]]) (480.0 / 15.0)
+      (asValue scaled_anchors :: [[Float]]) `shouldBe` [[2.53125, 2.5625], [4.21875, 5.28125]]
       shape (toAnchorW scaled_anchors) `shouldBe` [1, 2, 1, 1]
       (asValue (I.masked_select (asTensor ([1, 2, 3, 4] :: [Float])) (asTensor ([True, False, True, False] :: [Bool]))) :: [Float]) `shouldBe` [1.0, 3.0]
       let v = zeros' [4]
@@ -224,7 +224,7 @@ spec = do
           by = iboxes ! (Ellipsis, 1)
           bw = iboxes ! (Ellipsis, 2)
           bh = iboxes ! (Ellipsis, 3)
-          iianchors = map (\[a, b] -> (a, b)) $ (asValue ianchors :: [[Float]])
+          iianchors = ianchors
           target = toBuildTargets (bx, by, bw, bh) icls itarget iianchors 0.5
       (asValue oobj_mask :: [[[[Bool]]]]) `shouldBe` (asValue (obj_mask target) :: [[[[Bool]]]])
       (asValue onoobj_mask :: [[[[Bool]]]]) `shouldBe` (asValue (noobj_mask target) :: [[[[Bool]]]])
@@ -234,20 +234,6 @@ spec = do
       asValue (mseLoss otw (tw target)) < (0.0001 :: Float) `shouldBe` True
       asValue (mseLoss otcls (tcls target)) < (0.0001 :: Float) `shouldBe` True
       asValue (mseLoss otconf (tconf target)) < (0.0001 :: Float) `shouldBe` True
-    it "Loss with darknet" $ do
-      mconfig <- readIniFile "config/yolov3.cfg"
-      let Right cfg@(DarknetConfig global layers) = mconfig
-      length (toList layers) `shouldBe` 107
-      let Right spec = toDarknetSpec cfg
-      net <- sample spec
-      net' <- loadWeights net "weights/yolov3.weights"
-      imgs <- readFloatTensor "test-data/train/imgs.bin" [8,3,384,384]
-      targets <- readFloatTensor "test-data/train/targets.bin" [72,6]
-      exp_loss <- readFloatTensor "test-data/train/loss.bin" []
-      exp_outputs <- readFloatTensor "test-data/train/outputs.bin" [8,9072,85]
-      let loss = snd $ forwardDarknet net' (Just targets, imgs)
-          exp_outputs  = snd $ forwardDarknet net' (Nothing, imgs)
-      asValue (mseLoss exp_loss loss) < (0.0001 :: Float) `shouldBe` True
   describe "DarknetSpec-Resnet" $ do
     it "Inference" $ do
       mconfig <- readIniFile "config/resnet18.cfg"

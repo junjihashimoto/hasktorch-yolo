@@ -28,6 +28,18 @@ import Torch.Tensor as D
 import Torch.TensorFactories
 --import Torch.Typed.NN (HasForward (..))
 import qualified Torch.Vision.Darknet.Spec as S
+import Debug.Trace
+import System.IO.Unsafe
+
+detach' :: Tensor -> Tensor
+detach' = unsafePerformIO . D.detach
+
+trace' :: Show a => String -> a -> a
+-- trace' b a = trace (b++":"++ show a) a
+trace' b a = a
+
+trace'' :: Show a => String -> a -> b -> b
+trace'' b a c = trace (b++":"++ show a) c
 
 type Index = Int
 
@@ -203,9 +215,11 @@ instance HasForward ShortCut (Tensor, Map Int Tensor) Tensor where
              in activation $ input + D.conv2d' weight' (_toDevice dev $ zeros' [c0]) (stride, stride) (0, 0) shortcut
   forwardStoch f a = pure $ forward f a
 
-type Anchors = [(Float, Float)]
+-- type Anchors = [(Float, Float)]
+type Anchors = Tensor
 
-type ScaledAnchors = [(Float, Float)]
+--type ScaledAnchors = [(Float, Float)]
+type ScaledAnchors = Tensor
 
 data Yolo = Yolo
   { anchors :: Anchors,
@@ -219,7 +233,7 @@ instance Randomizable S.YoloSpec Yolo where
     pure $
       Yolo
         { classes = classes,
-          anchors = map (\(a, b) -> (fromIntegral a, fromIntegral b)) anchors,
+          anchors = asTensor (map (\(a, b) -> [fromIntegral a :: Float, fromIntegral b]) anchors),
           img_size = img_size
         }
 
@@ -229,7 +243,7 @@ toPrediction :: Yolo -> Tensor -> Prediction
 toPrediction Yolo {..} input =
   let num_samples = D.size 0 input
       grid_size = D.size 2 input
-      num_anchors = length anchors
+      num_anchors = head $ D.shape anchors
    in Prediction $ D.contiguous $ D.permute [0, 1, 3, 4, 2] $ D.reshape [num_samples, num_anchors, classes + 5, grid_size, grid_size] input
 
 squeezeLastDim :: Tensor -> Tensor
@@ -295,19 +309,23 @@ gridY ::
 gridY g = D.contiguous $ D.reshape [1, 1, g, g] $ I.t $ D.repeat [g, 1] $ arange' (0 :: Int) g (1 :: Int)
 
 toScaledAnchors :: Anchors -> Float -> ScaledAnchors
-toScaledAnchors anchors stride = map (\(a_w, a_h) -> (a_w / stride, a_h / stride)) anchors
+toScaledAnchors anchors stride = stride `D.divScalar` anchors -- map (\(a_w, a_h) -> (a_w / stride, a_h / stride)) anchors
 
 toAnchorW :: ScaledAnchors -> Tensor
-toAnchorW scaled_anchors = D.reshape [1, length scaled_anchors, 1, 1] $ asTensor $ (map fst scaled_anchors :: [Float])
+toAnchorW scaled_anchors =
+  let len = head $ D.shape scaled_anchors
+  in D.reshape [1, len, 1, 1] $ scaled_anchors ! (Ellipsis,0)
 
 toAnchorH :: ScaledAnchors -> Tensor
-toAnchorH scaled_anchors = D.reshape [1, length scaled_anchors, 1, 1] $ asTensor $ (map snd scaled_anchors :: [Float])
+toAnchorH scaled_anchors =
+  let len = head $ D.shape scaled_anchors
+  in D.reshape [1, len, 1, 1] $ scaled_anchors ! (Ellipsis,1)
 
 toPredBox ::
   Yolo ->
   Prediction ->
   Float ->
-  (Tensor, Tensor, Tensor, Tensor)
+  ((Tensor, Tensor, Tensor, Tensor), Tensor)
 toPredBox Yolo {..} prediction stride =
   let input = fromPrediction prediction
       dev = device input
@@ -315,11 +333,12 @@ toPredBox Yolo {..} prediction stride =
       scaled_anchors = toScaledAnchors anchors stride
       anchor_w = _toDevice dev $ toAnchorW scaled_anchors
       anchor_h = _toDevice dev $ toAnchorH scaled_anchors
-   in ( toX prediction + _toDevice dev (gridX grid_size),
-        toY prediction + _toDevice dev (gridY grid_size),
-        D.exp (toW prediction) * anchor_w,
-        D.exp (toH prediction) * anchor_h
-      )
+   in (( toX prediction + _toDevice dev (gridX grid_size),
+         toY prediction + _toDevice dev (gridY grid_size),
+         D.exp (toW prediction) * anchor_w,
+         D.exp (toH prediction) * anchor_h
+       ),
+       scaled_anchors)
 
 bboxWhIou ::
   (Float, Float) ->
@@ -365,7 +384,7 @@ data Target = Target
     th :: Tensor,
     tcls :: Tensor,
     tconf :: Tensor
-  }
+  } deriving (Show)
 
 toBuildTargets ::
   (Tensor, Tensor, Tensor, Tensor) ->
@@ -403,10 +422,10 @@ toBuildTargets
         gi = toType D.Int64 gx
         gj = toType D.Int64 gy
         -- (anchors,batch)
-        ious_list = map (\anchor -> bboxWhIou anchor (gw, gh)) anchors
+        ious_list = map (\[anchor_w,anchor_h] -> bboxWhIou (anchor_w,anchor_h) (gw, gh)) $ (asValue anchors :: [[Float]])
         ious = D.transpose (D.Dim 0) (D.Dim 1) $ D.stack (D.Dim 0) ious_list
-        (best_ious, best_n) = I.maxDim ious 0 False
-        best_n_anchor = anchors !! (asValue best_n :: Int)
+        (best_ious, best_n) = trace' "best_n" $ I.maxDim ious (-1) False
+        best_n_anchor = (trace' "anchors" anchors) ! best_n
         b = toType D.Int64 $ squeezeLastDim $ D.slice (-1) 0 1 1 target
         target_labels = toType D.Int64 $ squeezeLastDim $ D.slice (-1) 1 2 1 target
         obj_mask =
@@ -443,12 +462,12 @@ toBuildTargets
           maskedFill
             (zeros' [nB, nA, nG, nG])
             (b, best_n, gj, gi)
-            (I.log (gw / (asTensor (fst best_n_anchor)) + 1e-16))
+            (I.log ((trace' "gw" gw) / (trace' "best_n_anchor" $ best_n_anchor ! (Ellipsis,0)) + 1e-16))
         th =
           maskedFill
             (zeros' [nB, nA, nG, nG])
             (b, best_n, gj, gi)
-            (I.log (gh / (asTensor (snd best_n_anchor)) + 1e-16))
+            (I.log (gh / (best_n_anchor ! (Ellipsis,1)) + 1e-16))
         tcls =
           maskedFill
             tcls_init
@@ -467,23 +486,23 @@ totalLoss :: Yolo -> Prediction -> Target -> Tensor
 totalLoss yolo prediction Target {..} =
   let x = toX prediction
       y = toY prediction
-      w = toW prediction
+      w = trace' "w" $ toW prediction
       h = toH prediction
       pred_conf = toPredConf prediction
       pred_cls = toPredClass prediction
-      omask t = t `index` [obj_mask]
-      nmask t = t `index` [noobj_mask]
-      loss_x = D.mseLoss (omask x) (omask ty)
-      loss_y = D.mseLoss (omask y) (omask ty)
-      loss_w = D.mseLoss (omask w) (omask tw)
-      loss_h = D.mseLoss (omask h) (omask th)
-      bceLoss = D.binaryCrossEntropyLoss'
-      loss_conf_obj = bceLoss (omask pred_conf) (omask tconf)
-      loss_conf_noobj = bceLoss (nmask pred_conf) (nmask tconf)
+      omask t = t ! obj_mask
+      nmask t = t ! noobj_mask
+      loss_x = trace' "loss_x" $ D.mseLoss (omask tx) (omask x)
+      loss_y = trace' "loss_y" $ D.mseLoss (omask ty) (omask y)
+      loss_w = trace' "loss_w" $ D.mseLoss (omask (trace' "tw" tw)) (omask w)
+      loss_h = trace' "loss_h" $ D.mseLoss (omask th) (omask h)
+      bceLoss a b = D.binaryCrossEntropyLoss' a b
+      loss_conf_obj = bceLoss (omask tconf) (omask pred_conf)
+      loss_conf_noobj = bceLoss (nmask tconf) (nmask pred_conf)
       obj_scale = 1
       noobj_scale = 100
       loss_conf = obj_scale * loss_conf_obj + noobj_scale * loss_conf_noobj
-      loss_cls = bceLoss (omask pred_cls) (omask tcls)
+      loss_cls = bceLoss (omask tcls) (omask pred_cls)
    in loss_x + loss_y + loss_w + loss_h + loss_conf + loss_cls
 
 data YoloOutput = YoloOutput
@@ -500,11 +519,11 @@ data YoloOutput = YoloOutput
 instance HasForward Yolo (Maybe Tensor, Tensor) Tensor where
   forwardStoch f a = pure $ forward f a
   forward yolo@Yolo {..} (train, input) =
-    let num_samples = D.size 0 input
+    let num_samples = D.size 0 $ trace' "yolo:input" $ input
         grid_size = D.size 2 input
         stride = (fromIntegral img_size) / (fromIntegral grid_size) :: Float
         prediction = toPrediction yolo input
-        pred_boxes = toPredBox yolo prediction stride
+        (pred_boxes, scaled_anchors) = trace' "pred_boxes" $ toPredBox yolo prediction stride
         (px, py, pw, ph) = pred_boxes
         pred_cls = toPredClass prediction
         pred_conf = toPredConf prediction
@@ -519,8 +538,9 @@ instance HasForward Yolo (Maybe Tensor, Tensor) Tensor where
               ]
           Just target ->
             let ignore_thres = 0.5
-                build_target = toBuildTargets pred_boxes pred_cls target anchors ignore_thres
-             in totalLoss yolo prediction build_target
+                build_target = toBuildTargets pred_boxes pred_cls target scaled_anchors ignore_thres
+                loss = totalLoss yolo prediction build_target
+             in trace' "loss" $ loss
 
 data Layer
   = LConvolution Convolution
@@ -547,8 +567,8 @@ loadWeights (Darknet layers) weights_file = do
           new_params_w <- loadBinary handle (toDependent weight) >>= makeIndependent
           return $ (i, LConvolution (Convolution (Conv2d new_params_w new_params_b) a b c))
         LConvolutionWithBatchNorm (ConvolutionWithBatchNorm (Conv2d weight _) (BatchNorm bw bb rm rv) a b c) -> do
-          new_bb <- join $ makeIndependent <$> loadBinary handle (toDependent bw)
-          new_bw <- join $ makeIndependent <$> loadBinary handle (toDependent bb)
+          new_bb <- join $ makeIndependent <$> loadBinary handle (toDependent bb)
+          new_bw <- join $ makeIndependent <$> loadBinary handle (toDependent bw)
           new_rm <- toDependent <$> join (makeIndependentWithRequiresGrad <$> loadBinary handle rm <*> pure False)
           new_rv <- toDependent <$> join (makeIndependentWithRequiresGrad <$> loadBinary handle rv <*> pure False)
           let [features, _, _, _] = shape $ toDependent weight
@@ -582,9 +602,16 @@ forwardDarknet = forwardDarknet' (-1)
 forwardDarknet' :: Int -> Darknet -> (Maybe Tensor, Tensor) -> ((Map Index Tensor), Tensor)
 forwardDarknet' depth (Darknet layers) (train, input) = loop depth layers empty []
   where
+    [_,_,_,img_size] = D.shape input
     loop :: Int -> [(Index, Layer)] -> (Map Index Tensor) -> [Tensor] -> ((Map Index Tensor), Tensor)
-    loop 0 _ maps tensors = (maps, D.cat (D.Dim 1) (reverse tensors))
-    loop _ [] !maps !tensors = (maps, D.cat (D.Dim 1) (reverse tensors))
+    loop 0 _ maps tensors =
+      if isJust train
+      then (maps, sum tensors)
+      else (maps, D.cat (D.Dim 1) (reverse tensors))
+    loop _ [] !maps !tensors =
+      if isJust train
+      then (maps, sum tensors)
+      else (maps, D.cat (D.Dim 1) (reverse tensors))
     loop !n !((idx, layer) : next) !layerOutputs !yoloOutputs =
       let input' = (if idx == 0 then input else layerOutputs M.! (idx -1))
        in case layer of
@@ -613,7 +640,7 @@ forwardDarknet' depth (Darknet layers) (train, input) = loop depth layers empty 
               let out = forward s (input', layerOutputs)
                in loop (n -1) next (insert idx out layerOutputs) yoloOutputs
             LYolo s ->
-              let out = forward s (train, input')
+              let out = forward (s{img_size=img_size}) (train, input')
                in loop (n -1) next (insert idx out layerOutputs) (out : yoloOutputs)
 
 instance HasForward Darknet (Maybe Tensor, Tensor) Tensor where
