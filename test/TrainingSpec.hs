@@ -43,14 +43,14 @@ spec = do
       let Right spec = toDarknetSpec cfg
       net <- sample spec
       net' <- loadWeights net "weights/yolov3.weights"
-      imgs <- readFloatTensor "test-data/train2/imgs.bin" [2,3,480,480]
-      targets <- readFloatTensor "test-data/train2/targets.bin" [16,6]
-      exp_loss <- readFloatTensor "test-data/train2/loss.bin" []
-      exp_outputs <- readFloatTensor "test-data/train2/outputs.bin" [2,14175,85]
-      exp_layer0 <- readFloatTensor "test-data/train2/layer0.bin" [2,32,480,480]
-      exp_layer1 <- readFloatTensor "test-data/train2/layer1.bin" [2,64,240,240]
-      exp_layer81 <- readFloatTensor "test-data/train2/layer81.bin" [2,255,15,15]
-      exp_layer105 <- readFloatTensor "test-data/train2/layer105.bin" [2,255,60,60]
+      imgs <- readFloatTensor "test-data/training/imgs.bin" [2,3,480,480]
+      targets <- readFloatTensor "test-data/training/targets.bin" [16,6]
+      exp_loss <- readFloatTensor "test-data/training/loss.bin" []
+      exp_outputs <- readFloatTensor "test-data/training/outputs.bin" [2,14175,85]
+      exp_layer0 <- readFloatTensor "test-data/training/layer0.bin" [2,32,480,480]
+      exp_layer1 <- readFloatTensor "test-data/training/layer1.bin" [2,64,240,240]
+      exp_layer81 <- readFloatTensor "test-data/training/layer81.bin" [2,255,15,15]
+      exp_layer105 <- readFloatTensor "test-data/training/layer105.bin" [2,255,60,60]
       let (outputs,loss) = forwardDarknet net' (Just targets, imgs)
           layer0 = outputs M.! 0
           layer1 = outputs M.! 1
