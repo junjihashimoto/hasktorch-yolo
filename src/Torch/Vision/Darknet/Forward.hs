@@ -1,3 +1,4 @@
+{-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DuplicateRecordFields #-}
@@ -9,15 +10,11 @@
 
 module Torch.Vision.Darknet.Forward where
 
-import Control.Monad (forM, join, mapM, when)
--- import Codec.Serialise
-
+import Control.Monad (forM, join)
 import qualified Data.ByteString as BS
-import Data.List ((!!))
 import Data.Map (Map, empty, insert)
 import qualified Data.Map as M
 import Data.Maybe (catMaybes, isJust)
-import Debug.Trace
 import GHC.Exts
 import GHC.Generics
 import qualified System.IO
@@ -29,8 +26,13 @@ import Torch.NN
 import Torch.Serialize
 import Torch.Tensor as D
 import Torch.TensorFactories
-import Torch.Typed.NN (HasForward (..))
+--import Torch.Typed.NN (HasForward (..))
 import qualified Torch.Vision.Darknet.Spec as S
+import Debug.Trace
+
+trace' :: Show a => String -> a -> a
+-- trace' b a = trace (b++":"++ show a) a
+trace' b a = a
 
 type Index = Int
 
@@ -168,6 +170,8 @@ instance HasForward Route (Map Int Tensor) Tensor where
 data ShortCut = ShortCut
   { from :: Int,
     isLeaky :: Bool
+    --    shortCutWeight :: Tensor,
+    --    shortCutBias :: Tensor
   }
   deriving (Show, Generic, Parameterized)
 
@@ -179,35 +183,36 @@ instance Randomizable S.ShortCutSpec ShortCut where
 
 instance HasForward ShortCut (Tensor, Map Int Tensor) Tensor where
   forward ShortCut {..} (input, inputs) =
-    let [b0, c0, x0, y0] = D.shape input
+    let [_, c0, x0, y0] = D.shape input
         shortcut = inputs M.! from
-        [b1, c1, x1, y1] = D.shape shortcut
-        stride = if x1 < x0 then 1 else x1 `div` x0
-        sample = if x0 < x1 then 1 else x0 `div` x1
-        zero2d :: Int -> [[Float]]
-        zero2d n = replicate n $ replicate n 0
-        one2d :: Int -> [[Float]]
-        one2d n = (1 : replicate (n -1) 0) : (replicate (n -1) $ replicate n 0)
-        weight :: [[[[Float]]]]
-        weight = do
-          o <- [0 .. (c0 -1)]
-          return $ do
-            i <- [0 .. (c1 -1)]
-            if o == i
-              then return $ one2d stride
-              else return $ zero2d stride
-        dev = device input
-        weight' = _toDevice dev $ asTensor weight
+        [_, c1, x1, y1] = D.shape shortcut
         activation = if isLeaky then flip I.leaky_relu 0.1 else id
-     in -- trace (show (D.shape input) ++ show (D.shape shortcut) ++"\n") $
-        if c0 == c1 && x0 == x1 && y0 == y1
+     in if c0 == c1 && x0 == x1 && y0 == y1
           then activation $ input + shortcut
-          else activation $ input + D.conv2d' weight' (_toDevice dev $ zeros' [c0]) (stride, stride) (0, 0) shortcut
+          else
+            let stride = if x1 < x0 then 1 else x1 `div` x0
+                zero2d :: Int -> [[Float]]
+                zero2d n = replicate n $ replicate n 0
+                one2d :: Int -> [[Float]]
+                one2d n = (1 : replicate (n -1) 0) : (replicate (n -1) $ replicate n 0)
+                weight :: [[[[Float]]]]
+                weight = do
+                  o <- [0 .. (c0 -1)]
+                  return $ do
+                    i <- [0 .. (c1 -1)]
+                    if o == i
+                      then return $ one2d stride
+                      else return $ zero2d stride
+                dev = device input
+                weight' = _toDevice dev $ asTensor weight
+             in activation $ input + D.conv2d' weight' (_toDevice dev $ zeros' [c0]) (stride, stride) (0, 0) shortcut
   forwardStoch f a = pure $ forward f a
 
-type Anchors = [(Float, Float)]
+-- type Anchors = [(Float, Float)]
+type Anchors = Tensor
 
-type ScaledAnchors = [(Float, Float)]
+--type ScaledAnchors = [(Float, Float)]
+type ScaledAnchors = Tensor
 
 data Yolo = Yolo
   { anchors :: Anchors,
@@ -221,7 +226,7 @@ instance Randomizable S.YoloSpec Yolo where
     pure $
       Yolo
         { classes = classes,
-          anchors = map (\(a, b) -> (fromIntegral a, fromIntegral b)) anchors,
+          anchors = asTensor (map (\(a, b) -> [fromIntegral a :: Float, fromIntegral b]) anchors),
           img_size = img_size
         }
 
@@ -231,7 +236,7 @@ toPrediction :: Yolo -> Tensor -> Prediction
 toPrediction Yolo {..} input =
   let num_samples = D.size 0 input
       grid_size = D.size 2 input
-      num_anchors = length anchors
+      num_anchors = head $ D.shape anchors
    in Prediction $ D.contiguous $ D.permute [0, 1, 3, 4, 2] $ D.reshape [num_samples, num_anchors, classes + 5, grid_size, grid_size] input
 
 squeezeLastDim :: Tensor -> Tensor
@@ -297,30 +302,36 @@ gridY ::
 gridY g = D.contiguous $ D.reshape [1, 1, g, g] $ I.t $ D.repeat [g, 1] $ arange' (0 :: Int) g (1 :: Int)
 
 toScaledAnchors :: Anchors -> Float -> ScaledAnchors
-toScaledAnchors anchors stride = map (\(a_w, a_h) -> (a_w / stride, a_h / stride)) anchors
+toScaledAnchors anchors stride = stride `D.divScalar` anchors -- map (\(a_w, a_h) -> (a_w / stride, a_h / stride)) anchors
 
 toAnchorW :: ScaledAnchors -> Tensor
-toAnchorW scaled_anchors = D.reshape [1, length scaled_anchors, 1, 1] $ asTensor $ (map fst scaled_anchors :: [Float])
+toAnchorW scaled_anchors =
+  let len = head $ D.shape scaled_anchors
+  in D.reshape [1, len, 1, 1] $ scaled_anchors ! (Ellipsis,0)
 
 toAnchorH :: ScaledAnchors -> Tensor
-toAnchorH scaled_anchors = D.reshape [1, length scaled_anchors, 1, 1] $ asTensor $ (map snd scaled_anchors :: [Float])
+toAnchorH scaled_anchors =
+  let len = head $ D.shape scaled_anchors
+  in D.reshape [1, len, 1, 1] $ scaled_anchors ! (Ellipsis,1)
 
 toPredBox ::
   Yolo ->
   Prediction ->
   Float ->
-  (Tensor, Tensor, Tensor, Tensor)
+  ((Tensor, Tensor, Tensor, Tensor), Tensor)
 toPredBox Yolo {..} prediction stride =
   let input = fromPrediction prediction
+      dev = device input
       grid_size = D.size 2 input
       scaled_anchors = toScaledAnchors anchors stride
-      anchor_w = toAnchorW scaled_anchors
-      anchor_h = toAnchorH scaled_anchors
-   in ( toX prediction + gridX grid_size,
-        toY prediction + gridY grid_size,
-        D.exp (toW prediction) * anchor_w,
-        D.exp (toH prediction) * anchor_h
-      )
+      anchor_w = _toDevice dev $ toAnchorW scaled_anchors
+      anchor_h = _toDevice dev $ toAnchorH scaled_anchors
+   in (( toX prediction + _toDevice dev (gridX grid_size),
+         toY prediction + _toDevice dev (gridY grid_size),
+         D.exp (toW prediction) * anchor_w,
+         D.exp (toH prediction) * anchor_h
+       ),
+       scaled_anchors)
 
 bboxWhIou ::
   (Float, Float) ->
@@ -366,7 +377,7 @@ data Target = Target
     th :: Tensor,
     tcls :: Tensor,
     tconf :: Tensor
-  }
+  } deriving (Show)
 
 toBuildTargets ::
   (Tensor, Tensor, Tensor, Tensor) ->
@@ -404,10 +415,10 @@ toBuildTargets
         gi = toType D.Int64 gx
         gj = toType D.Int64 gy
         -- (anchors,batch)
-        ious_list = map (\anchor -> bboxWhIou anchor (gw, gh)) anchors
+        ious_list = map (\[anchor_w,anchor_h] -> bboxWhIou (anchor_w,anchor_h) (gw, gh)) $ (asValue anchors :: [[Float]])
         ious = D.transpose (D.Dim 0) (D.Dim 1) $ D.stack (D.Dim 0) ious_list
-        (best_ious, best_n) = I.maxDim ious 0 False
-        best_n_anchor = anchors !! (asValue best_n :: Int)
+        (best_ious, best_n) = I.maxDim ious (-1) False
+        best_n_anchor = anchors ! best_n
         b = toType D.Int64 $ squeezeLastDim $ D.slice (-1) 0 1 1 target
         target_labels = toType D.Int64 $ squeezeLastDim $ D.slice (-1) 1 2 1 target
         obj_mask =
@@ -444,12 +455,12 @@ toBuildTargets
           maskedFill
             (zeros' [nB, nA, nG, nG])
             (b, best_n, gj, gi)
-            (I.log (gw / (asTensor (fst best_n_anchor)) + 1e-16))
+            (I.log (gw / (best_n_anchor ! (Ellipsis,0)) + 1e-16))
         th =
           maskedFill
             (zeros' [nB, nA, nG, nG])
             (b, best_n, gj, gi)
-            (I.log (gh / (asTensor (snd best_n_anchor)) + 1e-16))
+            (I.log (gh / (best_n_anchor ! (Ellipsis,1)) + 1e-16))
         tcls =
           maskedFill
             tcls_init
@@ -472,19 +483,19 @@ totalLoss yolo prediction Target {..} =
       h = toH prediction
       pred_conf = toPredConf prediction
       pred_cls = toPredClass prediction
-      omask t = t `index` [obj_mask]
-      nmask t = t `index` [noobj_mask]
-      loss_x = D.mseLoss (omask x) (omask ty)
-      loss_y = D.mseLoss (omask y) (omask ty)
-      loss_w = D.mseLoss (omask w) (omask tw)
-      loss_h = D.mseLoss (omask h) (omask th)
-      bceLoss = D.binaryCrossEntropyLoss'
-      loss_conf_obj = bceLoss (omask pred_conf) (omask tconf)
-      loss_conf_noobj = bceLoss (nmask pred_conf) (nmask tconf)
+      omask t = t ! obj_mask
+      nmask t = t ! noobj_mask
+      loss_x = D.mseLoss (omask tx) (omask x)
+      loss_y = D.mseLoss (omask ty) (omask y)
+      loss_w = D.mseLoss (omask (trace' "tw" tw)) (omask w)
+      loss_h = D.mseLoss (omask th) (omask h)
+      bceLoss a b = D.binaryCrossEntropyLoss' a b
+      loss_conf_obj = bceLoss (omask tconf) (omask pred_conf)
+      loss_conf_noobj = bceLoss (nmask tconf) (nmask pred_conf)
       obj_scale = 1
       noobj_scale = 100
       loss_conf = obj_scale * loss_conf_obj + noobj_scale * loss_conf_noobj
-      loss_cls = bceLoss (omask pred_cls) (omask tcls)
+      loss_cls = bceLoss (omask tcls) (omask pred_cls)
    in loss_x + loss_y + loss_w + loss_h + loss_conf + loss_cls
 
 data YoloOutput = YoloOutput
@@ -503,11 +514,9 @@ instance HasForward Yolo (Maybe Tensor, Tensor) Tensor where
   forward yolo@Yolo {..} (train, input) =
     let num_samples = D.size 0 input
         grid_size = D.size 2 input
-        g = grid_size
-        num_anchors = length anchors
         stride = (fromIntegral img_size) / (fromIntegral grid_size) :: Float
         prediction = toPrediction yolo input
-        pred_boxes = toPredBox yolo prediction stride
+        (pred_boxes, scaled_anchors) = toPredBox yolo prediction stride
         (px, py, pw, ph) = pred_boxes
         pred_cls = toPredClass prediction
         pred_conf = toPredConf prediction
@@ -522,8 +531,9 @@ instance HasForward Yolo (Maybe Tensor, Tensor) Tensor where
               ]
           Just target ->
             let ignore_thres = 0.5
-                build_target = toBuildTargets pred_boxes pred_cls target anchors ignore_thres
-             in totalLoss yolo prediction build_target
+                build_target = toBuildTargets pred_boxes pred_cls target scaled_anchors ignore_thres
+                loss = totalLoss yolo prediction build_target
+             in loss
 
 data Layer
   = LConvolution Convolution
@@ -549,9 +559,9 @@ loadWeights (Darknet layers) weights_file = do
           new_params_b <- loadBinary handle (toDependent bias) >>= makeIndependent
           new_params_w <- loadBinary handle (toDependent weight) >>= makeIndependent
           return $ (i, LConvolution (Convolution (Conv2d new_params_w new_params_b) a b c))
-        LConvolutionWithBatchNorm (ConvolutionWithBatchNorm (Conv2d weight bias) (BatchNorm bw bb rm rv) a b c) -> do
-          new_bb <- join $ makeIndependent <$> loadBinary handle (toDependent bw)
-          new_bw <- join $ makeIndependent <$> loadBinary handle (toDependent bb)
+        LConvolutionWithBatchNorm (ConvolutionWithBatchNorm (Conv2d weight _) (BatchNorm bw bb rm rv) a b c) -> do
+          new_bb <- join $ makeIndependent <$> loadBinary handle (toDependent bb)
+          new_bw <- join $ makeIndependent <$> loadBinary handle (toDependent bw)
           new_rm <- toDependent <$> join (makeIndependentWithRequiresGrad <$> loadBinary handle rm <*> pure False)
           new_rv <- toDependent <$> join (makeIndependentWithRequiresGrad <$> loadBinary handle rv <*> pure False)
           let [features, _, _, _] = shape $ toDependent weight
@@ -566,7 +576,7 @@ loadWeights (Darknet layers) weights_file = do
 
 instance Randomizable S.DarknetSpec Darknet where
   sample (S.DarknetSpec layers) = do
-    layers <- forM (toList layers) $ \(idx, layer) ->
+    layers' <- forM (toList layers) $ \(idx, layer) ->
       case layer of
         S.LConvolutionSpec s -> (\s -> (idx, (LConvolution s))) <$> sample s
         S.LConvolutionWithBatchNormSpec s -> (\s -> (idx, (LConvolutionWithBatchNorm s))) <$> sample s
@@ -577,7 +587,7 @@ instance Randomizable S.DarknetSpec Darknet where
         S.LRouteSpec s -> (\s -> (idx, (LRoute s))) <$> sample s
         S.LShortCutSpec s -> (\s -> (idx, (LShortCut s))) <$> sample s
         S.LYoloSpec s -> (\s -> (idx, (LYolo s))) <$> sample s
-    pure $ Darknet (fromList layers)
+    pure $ Darknet (fromList layers')
 
 forwardDarknet :: Darknet -> (Maybe Tensor, Tensor) -> ((Map Index Tensor), Tensor)
 forwardDarknet = forwardDarknet' (-1)
@@ -585,13 +595,19 @@ forwardDarknet = forwardDarknet' (-1)
 forwardDarknet' :: Int -> Darknet -> (Maybe Tensor, Tensor) -> ((Map Index Tensor), Tensor)
 forwardDarknet' depth (Darknet layers) (train, input) = loop depth layers empty []
   where
+    [_,_,_,img_size] = D.shape input
     loop :: Int -> [(Index, Layer)] -> (Map Index Tensor) -> [Tensor] -> ((Map Index Tensor), Tensor)
-    loop 0 _ maps tensors = (maps, D.cat (D.Dim 1) (reverse tensors))
-    loop n [] maps tensors = (maps, D.cat (D.Dim 1) (reverse tensors))
-    loop n ((idx, layer) : next) layerOutputs yoloOutputs =
+    loop 0 _ maps tensors =
+      if isJust train
+      then (maps, sum tensors)
+      else (maps, D.cat (D.Dim 1) (reverse tensors))
+    loop _ [] !maps !tensors =
+      if isJust train
+      then (maps, sum tensors)
+      else (maps, D.cat (D.Dim 1) (reverse tensors))
+    loop !n !((idx, layer) : next) !layerOutputs !yoloOutputs =
       let input' = (if idx == 0 then input else layerOutputs M.! (idx -1))
-       in --       in case (trace (show idx ++ "\n" ++ show (D.shape input') ++ "\n") layer) of
-          case layer of
+       in case layer of
             LConvolution s ->
               let out = forward s input'
                in loop (n -1) next (insert idx out layerOutputs) yoloOutputs
@@ -617,7 +633,7 @@ forwardDarknet' depth (Darknet layers) (train, input) = loop depth layers empty 
               let out = forward s (input', layerOutputs)
                in loop (n -1) next (insert idx out layerOutputs) yoloOutputs
             LYolo s ->
-              let out = forward s (train, input')
+              let out = forward (s{img_size=img_size}) (train, input')
                in loop (n -1) next (insert idx out layerOutputs) (out : yoloOutputs)
 
 instance HasForward Darknet (Maybe Tensor, Tensor) Tensor where
@@ -655,36 +671,44 @@ toDetection ::
   -- | confidence threshold
   Float ->
   -- | (the number of objects that exceed the threshold)
-  Tensor
+  Maybe Tensor
 toDetection prediction conf_thres =
-  let indexes = ((prediction ! (Ellipsis, 4)) `D.ge` asTensor conf_thres)
-      prediction' = xywh2xyxy $ prediction ! indexes
-      n = (reverse $ D.shape prediction) !! 1
-      ids = (D.reshape [1, n] $ (arange' (0 :: Int) n (1 :: Int))) ! indexes
-      offset_class = 5
-      (values, indices) = D.maxDim (D.Dim (-1)) D.RemoveDim (prediction' ! (Ellipsis, Slice (offset_class, None)))
-      list_of_detections =
-        [ prediction' ! (Ellipsis, Slice (0, 5)),
-          D.stack
-            (D.Dim (-1))
-            [ values,
-              indices,
-              ids
+  if head (shape mprediction') == 0
+    then Nothing
+    else
+      let (values, indices) = D.maxDim (D.Dim (-1)) D.RemoveDim mprediction'
+          list_of_detections =
+            [ prediction' ! (Ellipsis, Slice (0, 5)),
+              D.stack
+                (D.Dim (-1))
+                [ values,
+                  indices,
+                  ids
+                ]
             ]
-        ]
-      detections = D.cat (D.Dim (-1)) list_of_detections
-      score = prediction' ! (Ellipsis, 4) * values
-      detections' = detections ! (I.argsort score (-1) True)
-   in detections'
+          detections = D.cat (D.Dim (-1)) list_of_detections
+          score = prediction' ! (Ellipsis, 4) * values
+          detections' = detections ! (I.argsort score (-1) True)
+       in Just detections'
+  where
+    indexes = ((prediction ! (Ellipsis, 4)) `D.ge` asTensor conf_thres)
+    prediction' = xywh2xyxy $ prediction ! indexes
+    n = (reverse $ D.shape prediction) !! 1
+    ids = (D.reshape [1, n] $ (arange' (0 :: Int) n (1 :: Int))) ! indexes
+    offset_class = 5
+    mprediction' = prediction' ! (Ellipsis, Slice (offset_class, None))
 
 nonMaxSuppression ::
   Tensor ->
   Float ->
   Float ->
   [Tensor]
-nonMaxSuppression prediction conf_thres nms_thres = loop org_detections
+nonMaxSuppression prediction conf_thres nms_thres =
+  case morg_detections of
+    Just org_detecgtions -> loop org_detecgtions
+    Nothing -> []
   where
-    org_detections = toDetection prediction conf_thres
+    morg_detections = toDetection prediction conf_thres
     loop :: Tensor -> [Tensor]
     loop detections =
       if (D.size 0 detections == 0)
@@ -702,6 +726,13 @@ nonMaxSuppression prediction conf_thres nms_thres = loop org_detections
               detections' = detections ! (I.logical_not invalid)
               detection' = D.sumDim (D.Dim 0) D.RemoveDim (dtype prediction) (weights * (detections ! (invalid, Slice (0, 4)))) / D.sumAll weights
            in D.cat (D.Dim (-1)) [detection', detection0 ! Slice (4, None)] : loop detections'
+
+batchedNonMaxSuppression ::
+  Tensor ->
+  Float ->
+  Float ->
+  [[Tensor]]
+batchedNonMaxSuppression predictions conf_thres nms_thres = map (\p -> nonMaxSuppression p conf_thres nms_thres) $ I.split predictions 1 0
 
 updateDarknet :: Darknet -> (Int -> Layer -> IO Layer) -> IO Darknet
 updateDarknet (Darknet darknet) func = do

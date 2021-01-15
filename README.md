@@ -57,7 +57,22 @@ nix-build
 ./result-2/bin/yolov3 config/yolov3.cfg weights/yolov3.weights test-data/train.jpg out.png
 ```
 
-
-
 ![fig.1](screenshot.png)
 
+
+# Test
+
+The command to calcurate mAP is as follows.
+It supports both CPU and CUDA.
+
+### CPU
+
+```
+DEVICE=cpu cabal run yolov3-pipelined-test --enable-profiling -- config/yolov3.cfg weights/yolov3.weights ./coco.data  +RTS -p -hc -N3
+```
+
+### DEVICE
+
+```
+DEVICE=cuda:0 cabal run yolov3-pipelined-test --enable-profiling -- config/yolov3.cfg weights/yolov3.weights ./coco.data  +RTS -p -hc -N3
+```
