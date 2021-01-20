@@ -103,7 +103,7 @@ spec = do
             Left err -> throwIO $ userError err
         Left err -> throwIO $ userError err
     it "Yolo:prediction" $ do
-      let yolo = Torch.Vision.Darknet.Forward.Yolo (asTensor [[23::Float, 27], [37, 58], [81, 82]]) 80 418
+      let yolo = Torch.Vision.Darknet.Forward.Yolo (asTensor [[23 :: Float, 27], [37, 58], [81, 82]]) 80 418
           pred = toPrediction yolo (ones' [1, 255, 10, 10])
       shape (fromPrediction pred) `shouldBe` [1, 3, 10, 10, 85]
       shape (toX pred) `shouldBe` [1, 3, 10, 10]

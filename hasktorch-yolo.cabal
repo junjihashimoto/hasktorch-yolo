@@ -74,6 +74,26 @@ executable yolov3-test
 executable yolov3-pipelined-test
   hs-source-dirs:      yolov3-pipelined-test
   main-is:             Main.hs
+  ghc-options:         -fno-warn-partial-type-signatures -rtsopts -threaded -g
+  build-depends:       bytestring >= 0.10.8
+                     , hasktorch-yolo
+                     , hasktorch
+                     , libtorch-ffi
+                     , JuicyPixels
+                     , safe-exceptions
+                     , containers
+                     , base
+                     , pipes-concurrency
+                     , pipes
+                     , async
+                     , mtl
+  default-extensions:  Strict
+                     , StrictData
+  extra-libraries:     jemalloc
+
+executable yolov3-training
+  hs-source-dirs:      yolov3-training
+  main-is:             Main.hs
   ghc-options:         -fno-warn-partial-type-signatures -rtsopts -threaded
   build-depends:       bytestring >= 0.10.8
                      , hasktorch-yolo

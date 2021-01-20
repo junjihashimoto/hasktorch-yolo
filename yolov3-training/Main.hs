@@ -30,7 +30,6 @@ import Torch.Vision.Darknet.Forward
 import Torch.Vision.Darknet.Spec
 import Torch.Vision.Datasets
 import Torch.Vision.Metrics
-import Torch.Internal.GC
 
 labels :: [String]
 labels =
@@ -181,7 +180,6 @@ doInference net' = loop
           inferences <- liftIO $ do
             performGC
             detach $ toCPU $ snd (forwardDarknet net' (Nothing, input_data))
-          liftIO $ dumpLibtorchObjects 1
           liftIO $ print "end:inference"
           yield $ Just (btargets, inferences)
           loop
@@ -253,7 +251,7 @@ main = do
     readDatasets datasets_file >>= \case
       Right (cfg :: Datasets) -> return cfg
       Left err -> throwIO $ userError err
-{-
+
   v <-
     execWriterT $
       runEffect $
@@ -262,34 +260,6 @@ main = do
           >-> doInference net'
           >-> doNonMaxSuppression
           >-> maybeToList
--}
-  (out0, in0) <- spawn $ bounded 1
-  w0 <- async $ do
-    runEffect $
-      makeBatchedDatasets datasets >->
-      toOutput out0
-
-  (out1, in1) <- spawn $ bounded 1
-  w1 <- forM [1..1] $ \i ->
-    async $ do
-      runEffect $
-        fromInput in0  >->
-        makeBatchedImages device >->
-        toOutput out1
-
-  (out2, in2) <- spawn $ bounded 1
-  w2 <- forM [1..1] $ \i ->
-    async $ do
-      runEffect $
-        fromInput in1  >->
-        doInference net' >->
-        toOutput out2
-
-  v <- execWriterT $ runEffect $
-      fromInput in2 >->
-      doNonMaxSuppression >->
-      maybeToList
-  mapM_ wait ([w0] ++ w1 ++ w2)
 
   let targets = concat $ map snd v :: [BBox]
       inferences = concat $ map fst v :: [(BBox, (Confidence, TP))]
