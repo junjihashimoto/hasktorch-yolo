@@ -132,7 +132,7 @@ readImage file width height =
       return $ Right (I.imageWidth rgb8, I.imageHeight rgb8, fromDynImage . I.ImageRGB8 $ img)
 
 makeBatchedDatasets :: MonadIO m => Datasets -> Producer (Maybe (Int, [FilePath])) m ()
-makeBatchedDatasets datasets = loop (zip [0 ..] (makeBatch 16 $ valid datasets))
+makeBatchedDatasets datasets = loop (zip [0 ..] (makeBatch 16 $ train datasets))
   where
     loop [] = do
       yield Nothing
@@ -179,7 +179,7 @@ doInference net' = loop
           liftIO $ print "start:inference"
           inferences <- liftIO $ do
             performGC
-            detach $ toCPU $ snd (forwardDarknet net' (Nothing, input_data))
+            detach $ toCPU $ snd (forwardDarknet net' (Just btargets, input_data))
           liftIO $ print "end:inference"
           yield $ Just (btargets, inferences)
           loop

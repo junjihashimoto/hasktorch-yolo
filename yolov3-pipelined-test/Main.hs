@@ -5,6 +5,7 @@
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
+{-# LANGUAGE ForeignFunctionInterface #-}
 
 module Main where
 
@@ -31,6 +32,10 @@ import Torch.Vision.Darknet.Spec
 import Torch.Vision.Datasets
 import Torch.Vision.Metrics
 import Torch.Internal.GC
+
+foreign import ccall unsafe "malloc.h malloc_stats"
+  malloc_stats  :: IO ()
+
 
 labels :: [String]
 labels =
@@ -181,7 +186,8 @@ doInference net' = loop
           inferences <- liftIO $ do
             performGC
             detach $ toCPU $ snd (forwardDarknet net' (Nothing, input_data))
-          liftIO $ dumpLibtorchObjects 1
+--          liftIO $ dumpLibtorchObjects 1
+          liftIO $ malloc_stats
           liftIO $ print "end:inference"
           yield $ Just (btargets, inferences)
           loop

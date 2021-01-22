@@ -89,25 +89,24 @@ executable yolov3-pipelined-test
                      , mtl
   default-extensions:  Strict
                      , StrictData
-  extra-libraries:     jemalloc
 
-executable yolov3-training
-  hs-source-dirs:      yolov3-training
-  main-is:             Main.hs
-  ghc-options:         -fno-warn-partial-type-signatures -rtsopts -threaded
-  build-depends:       bytestring >= 0.10.8
-                     , hasktorch-yolo
-                     , hasktorch
-                     , JuicyPixels
-                     , safe-exceptions
-                     , containers
-                     , base
-                     , pipes-concurrency
-                     , pipes
-                     , async
-                     , mtl
-  default-extensions:  Strict
-                     , StrictData
+-- executable yolov3-training
+--   hs-source-dirs:      yolov3-training
+--   main-is:             Main.hs
+--   ghc-options:         -fno-warn-partial-type-signatures -rtsopts -threaded
+--   build-depends:       bytestring >= 0.10.8
+--                      , hasktorch-yolo
+--                      , hasktorch
+--                      , JuicyPixels
+--                      , safe-exceptions
+--                      , containers
+--                      , base
+--                      , pipes-concurrency
+--                      , pipes
+--                      , async
+--                      , mtl
+--   default-extensions:  Strict
+--                      , StrictData
 
 test-suite spec
   type:               exitcode-stdio-1.0
