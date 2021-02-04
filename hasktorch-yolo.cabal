@@ -89,10 +89,6 @@ executable yolov3-pipelined-test
                      , mtl
   default-extensions:  Strict
                      , StrictData
---  extra-libraries:     jemalloc
- c-sources:            csrc/ystats.c
- install-includes:     csrc/ystats.h
- include-dirs:         csrc
 
 executable yolov3-training
   hs-source-dirs:      yolov3-training
