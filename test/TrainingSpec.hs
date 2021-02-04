@@ -56,24 +56,6 @@ spec = do
           layer1 = outputs M.! 1
           layer81 = outputs M.! 81
           layer105 = outputs M.! 105
-      print $ shape exp_layer0
-      print $ shape layer0
-      print $ imgs ! (0, 0, 0, (Slice (0, 4)))
-      print $ exp_layer0 ! (0, 0, 0, (Slice (0, 4)))
-      print $ layer0 ! (0, 0, 0, (Slice (0, 4)))
-
-      print $ shape exp_layer1
-      print $ shape layer1
-      print $ exp_layer1 ! (0, 0, 0, (Slice (0, 4)))
-      print $ layer1 ! (0, 0, 0, (Slice (0, 4)))
-
-      print $ shape exp_layer105
-      print $ exp_layer105 ! (0, 0, 0, (Slice (0, 4)))
-      print $ shape layer105
-      print $ layer105 ! (0, 0, 0, (Slice (0, 4)))
-
-      print exp_loss
-      print loss
       asValue (mseLoss exp_layer0 layer0) < (0.000001 :: Float) `shouldBe` True
       asValue (mseLoss exp_layer1 layer1) < (0.0001 :: Float) `shouldBe` True
       asValue (mseLoss exp_layer81 layer81) < (0.0001 :: Float) `shouldBe` True

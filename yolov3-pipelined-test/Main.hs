@@ -32,10 +32,16 @@ import Torch.Vision.Darknet.Spec
 import Torch.Vision.Datasets
 import Torch.Vision.Metrics
 import Torch.Internal.GC
+import Foreign.Ptr
 
 foreign import ccall unsafe "malloc.h malloc_stats"
   malloc_stats  :: IO ()
 
+foreign import ccall unsafe "malloc.h malloc_trim"
+  malloc_trim  :: Int -> IO ()
+
+--foreign import ccall unsafe "jemalloc/jemalloc.h malloc_stats_print"
+--jemalloc_stats  :: Ptr () -> Ptr () -> Ptr () -> IO ()
 
 labels :: [String]
 labels =
@@ -121,6 +127,17 @@ labels =
     "toothbrush"
   ]
 
+pmap :: Parameterized f => f -> (Parameter -> Parameter) -> f
+pmap model func = replaceParameters model (map func (flattenParameters model))
+
+pmapM :: Parameterized f => f -> (Parameter -> IO Parameter) -> IO f
+pmapM model func = do
+  params <- mapM func (flattenParameters model)
+  return $ replaceParameters model params
+
+toEval :: Parameterized f => f -> IO f
+toEval model = pmapM model $ \p -> makeIndependentWithRequiresGrad (toDependent p) False
+
 makeBatch :: Int -> [a] -> [[a]]
 makeBatch num_batch datasets =
   let (a, ax) = (Prelude.take num_batch datasets, Prelude.drop num_batch datasets)
@@ -185,9 +202,11 @@ doInference net' = loop
           liftIO $ print "start:inference"
           inferences <- liftIO $ do
             performGC
+            malloc_trim 0
             detach $ toCPU $ snd (forwardDarknet net' (Nothing, input_data))
 --          liftIO $ dumpLibtorchObjects 1
-          liftIO $ malloc_stats
+--          liftIO $ malloc_stats
+--          liftIO $ jemalloc_stats nullPtr nullPtr nullPtr
           liftIO $ print "end:inference"
           yield $ Just (btargets, inferences)
           loop
@@ -252,8 +271,11 @@ main = do
           Right spec -> return spec
           Left err -> throwIO $ userError err
       Left err -> throwIO $ userError err
-  net <- sample spec
-  net' <- toDevice device <$> loadWeights net weight_file
+  net' <- do
+    net <- sample spec
+    net_ <- toDevice device <$> loadWeights net weight_file
+    toEval net_
+--    return net_
 
   datasets <-
     readDatasets datasets_file >>= \case

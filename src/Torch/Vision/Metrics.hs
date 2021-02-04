@@ -14,6 +14,7 @@ import Data.List (maximumBy, sort, sortBy)
 import Data.List.Split
 import qualified Data.Set as S
 import GHC.Generics
+import Torch.Tensor
 
 type Recall = Float
 
@@ -46,6 +47,11 @@ data BBox = BBox
     y1 :: Float
   }
   deriving (Show, Eq, Generic, NFData)
+
+boundingbox2Tensor :: [[BoundingBox]] -> Tensor
+boundingbox2Tensor batched_bboxes = asTensor $ concat $
+  flip map (zip [(0::Int)..] batched_bboxes) $ \(batchid, bboxes) ->
+    flip map bboxes $ \BoundingBox {..} -> [ fromIntegral batchid, fromIntegral bboxClassid, bboxX, bboxY, bboxWidth, bboxHeight ]
 
 readBoundingBox :: FilePath -> IO [BoundingBox]
 readBoundingBox file = do

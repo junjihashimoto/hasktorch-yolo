@@ -30,6 +30,9 @@ import Torch.Vision.Darknet.Forward
 import Torch.Vision.Darknet.Spec
 import Torch.Vision.Datasets
 import Torch.Vision.Metrics
+import Torch.Optim.CppOptim
+-- import Torch.Optim
+import Data.Default.Class
 
 labels :: [String]
 labels =
@@ -140,7 +143,7 @@ makeBatchedDatasets datasets = loop (zip [0 ..] (makeBatch 16 $ train datasets))
       yield (Just x)
       loop xs
 
-makeBatchedImages :: MonadIO m => Device -> Pipe (Maybe (Int, [FilePath])) (Maybe ([[BBox]], Tensor)) m ()
+makeBatchedImages :: MonadIO m => Device -> Pipe (Maybe (Int, [FilePath])) (Maybe (Tensor, Tensor)) m ()
 makeBatchedImages device = loop
   where
     loop =
@@ -158,52 +161,33 @@ makeBatchedImages device = loop
                 Right (width, height, input_tensor) -> do
                   return $
                     Just
-                      ( map (toXYXY 416 416 . rescale width height 416 416) bboxes,
+                      ( map (rescale width height 416 416) bboxes,
                         divScalar (255 :: Float) $ toType Float $ hwc2chw input_tensor
                       )
                 Left err -> return Nothing
           let imgs = catMaybes imgs'
-              btargets = map fst imgs :: [[BBox]]
+              btargets = map fst imgs :: [[BoundingBox]]
               input_data = cat (Dim 0) $ map snd imgs :: Tensor
-          yield $ Just (btargets, _toDevice device input_data)
+          yield $ Just (contiguous $ boundingbox2Tensor btargets, contiguous $ _toDevice device input_data)
           loop
 
-doInference :: MonadIO m => Darknet -> Pipe (Maybe ([[BBox]], Tensor)) (Maybe ([[BBox]], Tensor)) m ()
-doInference net' = loop
+training :: (MonadIO m, Optimizer opt) => String -> String -> opt -> Darknet -> Pipe (Maybe (Tensor, Tensor)) (Maybe Float) m ()
+training weight_file saved_weight_file optState org_net = loop (org_net,optState)
   where
-    loop = do
+    loop (net,opt) = do
       await >>= \case
         Nothing -> do
           yield Nothing
         Just (!btargets, !input_data) -> do
-          liftIO $ print "start:inference"
-          inferences <- liftIO $ do
-            performGC
-            detach $ toCPU $ snd (forwardDarknet net' (Just btargets, input_data))
-          liftIO $ print "end:inference"
-          yield $ Just (btargets, inferences)
-          loop
+          liftIO $ print "start:training"
+          let loss = snd (forwardDarknet net (Just btargets, input_data))
+          (net',opt') <- liftIO $ runStep net opt loss 5e-4
+--          liftIO $ saveWeights net' weight_file saved_weight_file
+          liftIO $ print "end:training"
+          yield $ Just (asValue loss)
+          loop (net',opt')
 
-doNonMaxSuppression :: MonadIO m => Pipe (Maybe ([[BBox]], Tensor)) (Maybe ([(BBox, (Confidence, TP))], [BBox])) m ()
-doNonMaxSuppression =
-  await >>= \case
-    Nothing -> do
-      yield Nothing
-    Just (!btargets, !inferences) -> do
-      liftIO $ print "nonMaxSuppression"
-      let boutputs = batchedNonMaxSuppression inferences 0.001 0.5
-          v = flip map (zip btargets boutputs) $ \(!targets, !outputs) ->
-            let inference_bbox = flip map outputs $ \output ->
-                  let [!x0, !y0, !x1, !y1, !object_confidence, !class_confidence, !classid, !ids] = asValue output :: [Float]
-                   in (BBox (round classid) x0 y0 x1 y1, object_confidence)
-             in Just (computeTPForBBox 0.5 targets inference_bbox, targets)
-      each v
-      doNonMaxSuppression
-
-type Ret = [([(BBox, (Confidence, TP))], [BBox])]
-
---maybeToList :: Monad m => Consumer (Maybe a) m [a]
-maybeToList :: MonadIO m => Consumer (Maybe ([(BBox, (Confidence, TP))], [BBox])) (WriterT Ret m) ()
+maybeToList :: MonadIO m => Consumer (Maybe a) (WriterT [a] m) ()
 maybeToList = loop
   where
     loop = do
@@ -213,20 +197,24 @@ maybeToList = loop
           loop
         Nothing -> return ()
 
-saveResult :: MonadIO m => Consumer (Maybe ([(BBox, (Confidence, TP))], [BBox])) m ()
-saveResult = loop
-  where
-    loop = do
-      await >>= \case
-        Just !x -> do
-          liftIO $ appendFile "results.txt" (show x)
-          loop
-        Nothing -> return ()
+pmap :: Parameterized f => f -> (Parameter -> Parameter) -> f
+pmap model func = replaceParameters model (map func (flattenParameters model))
+
+pmapM :: Parameterized f => f -> (Parameter -> IO Parameter) -> IO f
+pmapM model func = do
+  params <- mapM func (flattenParameters model)
+  return $ replaceParameters model params
+
+toEval :: Parameterized f => f -> IO f
+toEval model = pmapM model $ \p -> makeIndependentWithRequiresGrad (toDependent p) False
+
+toTrain :: Parameterized f => f -> IO f
+toTrain model = pmapM model $ \p -> makeIndependent (toDependent p)
 
 main = do
   args <- getArgs
   when (length args /= 3) $ do
-    putStrLn "Usage: yolov3-test config-file weight-file datasets-file"
+    putStrLn "Usage: yolov3-training config-file weight-file datasets-file"
   let config_file = args !! 0
       weight_file = args !! 1
       datasets_file = args !! 2
@@ -245,25 +233,47 @@ main = do
           Left err -> throwIO $ userError err
       Left err -> throwIO $ userError err
   net <- sample spec
-  net' <- toDevice device <$> loadWeights net weight_file
+  forM_ (Prelude.take 10 $ flattenParameters net) $ \p -> do
+    if requiresGrad (toDependent p)
+      then
+        print (requiresGrad (toDependent p))
+      else
+        print $ shape $ toDependent p
+  print "---"
+  net_ <- loadWeights net weight_file
+  forM_ (Prelude.take 10 $ flattenParameters net_) $ \p -> do
+    if requiresGrad (toDependent p)
+      then
+        print (requiresGrad (toDependent p))
+      else
+        print $ shape $ toDependent p
+  let net' = toDevice device net_
+  makeIndependentWithRequiresGrad (zeros' []) True >>= print . requiresGrad . toDependent
+  makeIndependentWithRequiresGrad (zeros' []) False >>= print . requiresGrad . toDependent
+  -- net' <- toTrain net_
 
   datasets <-
     readDatasets datasets_file >>= \case
       Right (cfg :: Datasets) -> return cfg
       Left err -> throwIO $ userError err
 
-  v <-
-    execWriterT $
-      runEffect $
-        makeBatchedDatasets datasets
-          >-> makeBatchedImages device
-          >-> doInference net'
-          >-> doNonMaxSuppression
-          >-> maybeToList
+  let numEpoch = 100
+      adamOpt = (def { adamLr = 1e-4
+                     , adamBetas = (0.9, 0.999)
+                     , adamEps = 1e-8
+                     , adamWeightDecay = 0
+                     , adamAmsgrad = False
+                     } :: AdamOptions)
 
-  let targets = concat $ map snd v :: [BBox]
-      inferences = concat $ map fst v :: [(BBox, (Confidence, TP))]
-  aps <- forM (computeAPForBBox' targets inferences) $ \(cid, (_, _, _, ap)) -> do
-    print (cid, ap)
-    return ap
-  print $ "mAP:" ++ show (Prelude.sum aps / fromIntegral (length aps))
+  optimizer <- initOptimizer adamOpt net'
+--   let optimizer = GD
+
+  forM_ [1..numEpoch] $ \epoch -> do
+    v <-
+      execWriterT $
+        runEffect $
+          makeBatchedDatasets datasets
+            >-> makeBatchedImages device
+            >-> training weight_file "saved_weight.weights" optimizer net'
+            >-> maybeToList
+    print (epoch,v)
