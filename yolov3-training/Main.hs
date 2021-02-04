@@ -233,24 +233,7 @@ main = do
           Left err -> throwIO $ userError err
       Left err -> throwIO $ userError err
   net <- sample spec
-  forM_ (Prelude.take 10 $ flattenParameters net) $ \p -> do
-    if requiresGrad (toDependent p)
-      then
-        print (requiresGrad (toDependent p))
-      else
-        print $ shape $ toDependent p
-  print "---"
-  net_ <- loadWeights net weight_file
-  forM_ (Prelude.take 10 $ flattenParameters net_) $ \p -> do
-    if requiresGrad (toDependent p)
-      then
-        print (requiresGrad (toDependent p))
-      else
-        print $ shape $ toDependent p
-  let net' = toDevice device net_
-  makeIndependentWithRequiresGrad (zeros' []) True >>= print . requiresGrad . toDependent
-  makeIndependentWithRequiresGrad (zeros' []) False >>= print . requiresGrad . toDependent
-  -- net' <- toTrain net_
+  net' <- toDevice device <$> loadWeights net weight_file
 
   datasets <-
     readDatasets datasets_file >>= \case
