@@ -177,12 +177,13 @@ training weight_file saved_weight_file optState org_net = loop (org_net,optState
     loop (net,opt) = do
       await >>= \case
         Nothing -> do
+          liftIO $ print "Save the weight file for the trained model"
+          liftIO $ saveWeights net weight_file saved_weight_file
           yield Nothing
         Just (!btargets, !input_data) -> do
           liftIO $ print "start:training"
           let loss = snd (forwardDarknet net (Just btargets, input_data))
           (net',opt') <- liftIO $ runStep net opt loss 5e-4
---          liftIO $ saveWeights net' weight_file saved_weight_file
           liftIO $ print "end:training"
           yield $ Just (asValue loss)
           loop (net',opt')

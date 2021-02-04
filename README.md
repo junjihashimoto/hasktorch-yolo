@@ -76,3 +76,20 @@ DEVICE=cpu cabal run yolov3-pipelined-test --enable-profiling -- config/yolov3.c
 ```
 DEVICE=cuda:0 cabal run yolov3-pipelined-test --enable-profiling -- config/yolov3.cfg weights/yolov3.weights ./coco.data  +RTS -p -hc -N3
 ```
+
+# Training
+
+The command to train a model is as follows.
+It supports both CPU and CUDA.
+
+### CPU
+
+```
+DEVICE=cpu cabal run yolov3-training --enable-profiling -- config/yolov3.cfg weights/yolov3.weights ./coco.data  +RTS -p -hc -N3
+```
+
+### DEVICE
+
+```
+DEVICE=cuda:0 cabal run yolov3-training --enable-profiling -- config/yolov3.cfg weights/yolov3.weights ./coco.data  +RTS -p -hc -N3
+```
