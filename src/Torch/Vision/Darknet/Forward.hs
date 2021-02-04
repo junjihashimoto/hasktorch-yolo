@@ -10,11 +10,14 @@
 
 module Torch.Vision.Darknet.Forward where
 
-import Control.Monad (forM, join)
+import Control.Monad (forM, forM_, join)
 import qualified Data.ByteString as BS
 import Data.Map (Map, empty, insert)
 import qualified Data.Map as M
 import Data.Maybe (catMaybes, isJust)
+--import Torch.Typed.NN (HasForward (..))
+
+import Debug.Trace
 import GHC.Exts
 import GHC.Generics
 import qualified System.IO
@@ -26,13 +29,11 @@ import Torch.NN
 import Torch.Serialize
 import Torch.Tensor as D
 import Torch.TensorFactories
---import Torch.Typed.NN (HasForward (..))
 import qualified Torch.Vision.Darknet.Spec as S
-import Debug.Trace
 
 trace' :: Show a => String -> a -> a
--- trace' b a = trace (b++":"++ show a) a
-trace' b a = a
+trace' b a = trace (b++":"++ show a) a
+--trace' b a = a
 
 type Index = Int
 
@@ -45,7 +46,14 @@ data ConvolutionWithBatchNorm = ConvolutionWithBatchNorm
     layerSize :: Int,
     isLeaky :: Bool
   }
-  deriving (Show, Generic, Parameterized)
+  deriving (Show, Generic)
+
+instance Parameterized ConvolutionWithBatchNorm where
+  flattenParameters ConvolutionWithBatchNorm {..} = flattenParameters (conv2dWeight conv2d) ++ flattenParameters batchNorm
+  _replaceParameters a@ConvolutionWithBatchNorm {..} = do
+    w' <- _replaceParameters (conv2dWeight conv2d)
+    b' <- _replaceParameters batchNorm
+    return a {conv2d = conv2d {conv2dWeight = w'}, batchNorm = b'}
 
 instance Randomizable S.ConvolutionWithBatchNormSpec ConvolutionWithBatchNorm where
   sample S.ConvolutionWithBatchNormSpec {..} = do
@@ -307,12 +315,12 @@ toScaledAnchors anchors stride = stride `D.divScalar` anchors -- map (\(a_w, a_h
 toAnchorW :: ScaledAnchors -> Tensor
 toAnchorW scaled_anchors =
   let len = head $ D.shape scaled_anchors
-  in D.reshape [1, len, 1, 1] $ scaled_anchors ! (Ellipsis,0)
+   in D.reshape [1, len, 1, 1] $ scaled_anchors ! (Ellipsis, 0)
 
 toAnchorH :: ScaledAnchors -> Tensor
 toAnchorH scaled_anchors =
   let len = head $ D.shape scaled_anchors
-  in D.reshape [1, len, 1, 1] $ scaled_anchors ! (Ellipsis,1)
+   in D.reshape [1, len, 1, 1] $ scaled_anchors ! (Ellipsis, 1)
 
 toPredBox ::
   Yolo ->
@@ -326,12 +334,13 @@ toPredBox Yolo {..} prediction stride =
       scaled_anchors = toScaledAnchors anchors stride
       anchor_w = _toDevice dev $ toAnchorW scaled_anchors
       anchor_h = _toDevice dev $ toAnchorH scaled_anchors
-   in (( toX prediction + _toDevice dev (gridX grid_size),
-         toY prediction + _toDevice dev (gridY grid_size),
-         D.exp (toW prediction) * anchor_w,
-         D.exp (toH prediction) * anchor_h
-       ),
-       scaled_anchors)
+   in ( ( toX prediction + _toDevice dev (gridX grid_size),
+          toY prediction + _toDevice dev (gridY grid_size),
+          D.exp (toW prediction) * anchor_w,
+          D.exp (toH prediction) * anchor_h
+        ),
+        scaled_anchors
+      )
 
 bboxWhIou ::
   (Float, Float) ->
@@ -339,9 +348,11 @@ bboxWhIou ::
   (Tensor, Tensor) ->
   -- | batch
   Tensor
-bboxWhIou (w1', h1') (w2, h2) =
+bboxWhIou (w1', h1') (w2', h2') =
   let w1 = asTensor w1'
       h1 = asTensor h1'
+      w2 = toCPU w2'
+      h2 = toCPU h2'
       inter_area = I.min w1 w2 * I.min h1 h2
       union_area = (w1 * h1 + 1e-16) + w2 * h2 - inter_area
    in inter_area / union_area
@@ -377,7 +388,8 @@ data Target = Target
     th :: Tensor,
     tcls :: Tensor,
     tconf :: Tensor
-  } deriving (Show)
+  }
+  deriving (Show, Generic, Parameterized)
 
 toBuildTargets ::
   (Tensor, Tensor, Tensor, Tensor) ->
@@ -415,8 +427,10 @@ toBuildTargets
         gi = toType D.Int64 gx
         gj = toType D.Int64 gy
         -- (anchors,batch)
-        ious_list = map (\[anchor_w,anchor_h] -> bboxWhIou (anchor_w,anchor_h) (gw, gh)) $ (asValue anchors :: [[Float]])
+        ious_list = map (\[anchor_w, anchor_h] -> bboxWhIou (anchor_w, anchor_h) (gw, gh)) $ (asValue anchors :: [[Float]])
+--        ious_list = bboxWhIou (anchors ! (Ellipsis, 0), anchors ! (Ellipsis, 1)) (gw, gh)
         ious = D.transpose (D.Dim 0) (D.Dim 1) $ D.stack (D.Dim 0) ious_list
+--        ious = D.transpose (D.Dim 0) (D.Dim 1) $ ious_list
         (best_ious, best_n) = I.maxDim ious (-1) False
         best_n_anchor = anchors ! best_n
         b = toType D.Int64 $ squeezeLastDim $ D.slice (-1) 0 1 1 target
@@ -455,12 +469,12 @@ toBuildTargets
           maskedFill
             (zeros' [nB, nA, nG, nG])
             (b, best_n, gj, gi)
-            (I.log (gw / (best_n_anchor ! (Ellipsis,0)) + 1e-16))
+            (I.log (gw / (best_n_anchor ! (Ellipsis, 0)) + 1e-16))
         th =
           maskedFill
             (zeros' [nB, nA, nG, nG])
             (b, best_n, gj, gi)
-            (I.log (gh / (best_n_anchor ! (Ellipsis,1)) + 1e-16))
+            (I.log (gh / (best_n_anchor ! (Ellipsis, 1)) + 1e-16))
         tcls =
           maskedFill
             tcls_init
@@ -487,7 +501,7 @@ totalLoss yolo prediction Target {..} =
       nmask t = t ! noobj_mask
       loss_x = D.mseLoss (omask tx) (omask x)
       loss_y = D.mseLoss (omask ty) (omask y)
-      loss_w = D.mseLoss (omask (trace' "tw" tw)) (omask w)
+      loss_w = D.mseLoss (omask tw) (omask w)
       loss_h = D.mseLoss (omask th) (omask h)
       bceLoss a b = D.binaryCrossEntropyLoss' a b
       loss_conf_obj = bceLoss (omask tconf) (omask pred_conf)
@@ -521,6 +535,7 @@ instance HasForward Yolo (Maybe Tensor, Tensor) Tensor where
         pred_cls = toPredClass prediction
         pred_conf = toPredConf prediction
         cc = D.stack (D.Dim (-1)) [px, py, pw, ph]
+        dev = device input
      in case train of
           Nothing ->
             D.cat
@@ -531,8 +546,8 @@ instance HasForward Yolo (Maybe Tensor, Tensor) Tensor where
               ]
           Just target ->
             let ignore_thres = 0.5
-                build_target = toBuildTargets pred_boxes pred_cls target scaled_anchors ignore_thres
-                loss = totalLoss yolo prediction build_target
+                build_target = toBuildTargets pred_boxes pred_cls (toCPU target) (toCPU scaled_anchors) ignore_thres
+                loss = totalLoss yolo prediction (toDevice dev build_target)
              in loss
 
 data Layer
@@ -547,7 +562,7 @@ data Layer
   | LYolo Yolo
   deriving (Show, Generic, Parameterized)
 
-data Darknet = Darknet [(Index, Layer)] deriving (Show, Generic, Parameterized)
+newtype Darknet = Darknet [(Index, Layer)] deriving (Show, Generic, Parameterized)
 
 loadWeights :: Darknet -> String -> IO Darknet
 loadWeights (Darknet layers) weights_file = do
@@ -566,6 +581,7 @@ loadWeights (Darknet layers) weights_file = do
           new_rv <- toDependent <$> join (makeIndependentWithRequiresGrad <$> loadBinary handle rv <*> pure False)
           let [features, _, _, _] = shape $ toDependent weight
           new_b <- makeIndependentWithRequiresGrad (zeros' [features]) False
+--          new_b <- makeIndependent (zeros' [features])
           new_w <- join $ makeIndependent <$> loadBinary handle (toDependent weight)
           return $ (i, LConvolutionWithBatchNorm (ConvolutionWithBatchNorm (Conv2d new_w new_b) (BatchNorm new_bw new_bb new_rm new_rv) a b c))
         _ -> do
@@ -573,6 +589,27 @@ loadWeights (Darknet layers) weights_file = do
           new_params <- forM cur_params $ \param -> loadBinary handle (toDependent param) >>= makeIndependent
           return $ (i, replaceParameters layer new_params)
     return $ Darknet layers'
+
+saveWeights :: Darknet -> String -> String -> IO ()
+saveWeights (Darknet layers) origin weights_file = do
+  System.IO.withFile origin System.IO.ReadMode $ \reference ->
+    System.IO.withFile weights_file System.IO.WriteMode $ \handle -> do
+      v <- BS.hGet reference (5 * 4)
+      BS.hPut handle v
+      forM_ layers $ \(i, layer) -> do
+        case layer of
+          LConvolution (Convolution (Conv2d weight bias) a b c) -> do
+            saveBinary handle (toDependent bias)
+            saveBinary handle (toDependent weight)
+          LConvolutionWithBatchNorm (ConvolutionWithBatchNorm (Conv2d weight _) (BatchNorm bw bb rm rv) a b c) -> do
+            saveBinary handle (toDependent bb)
+            saveBinary handle (toDependent bw)
+            saveBinary handle rm
+            saveBinary handle rv
+            saveBinary handle (toDependent weight)
+          _ -> do
+            let cur_params = flattenParameters layer
+            forM_ cur_params $ \param -> saveBinary handle (toDependent param)
 
 instance Randomizable S.DarknetSpec Darknet where
   sample (S.DarknetSpec layers) = do
@@ -595,16 +632,16 @@ forwardDarknet = forwardDarknet' (-1)
 forwardDarknet' :: Int -> Darknet -> (Maybe Tensor, Tensor) -> ((Map Index Tensor), Tensor)
 forwardDarknet' depth (Darknet layers) (train, input) = loop depth layers empty []
   where
-    [_,_,_,img_size] = D.shape input
+    [_, _, _, img_size] = D.shape input
     loop :: Int -> [(Index, Layer)] -> (Map Index Tensor) -> [Tensor] -> ((Map Index Tensor), Tensor)
     loop 0 _ maps tensors =
       if isJust train
-      then (maps, sum tensors)
-      else (maps, D.cat (D.Dim 1) (reverse tensors))
+        then (maps, sum tensors)
+        else (maps, D.cat (D.Dim 1) (reverse tensors))
     loop _ [] !maps !tensors =
       if isJust train
-      then (maps, sum tensors)
-      else (maps, D.cat (D.Dim 1) (reverse tensors))
+        then (maps, sum tensors)
+        else (maps, D.cat (D.Dim 1) (reverse tensors))
     loop !n !((idx, layer) : next) !layerOutputs !yoloOutputs =
       let input' = (if idx == 0 then input else layerOutputs M.! (idx -1))
        in case layer of
@@ -633,7 +670,7 @@ forwardDarknet' depth (Darknet layers) (train, input) = loop depth layers empty 
               let out = forward s (input', layerOutputs)
                in loop (n -1) next (insert idx out layerOutputs) yoloOutputs
             LYolo s ->
-              let out = forward (s{img_size=img_size}) (train, input')
+              let out = forward (s {img_size = img_size}) (train, input')
                in loop (n -1) next (insert idx out layerOutputs) (out : yoloOutputs)
 
 instance HasForward Darknet (Maybe Tensor, Tensor) Tensor where

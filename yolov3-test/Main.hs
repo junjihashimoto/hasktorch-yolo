@@ -5,6 +5,7 @@
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
+{-# LANGUAGE ForeignFunctionInterface #-}
 
 module Main where
 
@@ -14,7 +15,7 @@ import Control.Exception.Safe
 import Control.Monad (foldM, forM, forM_, when)
 import qualified Data.Map as M
 import Data.Maybe (catMaybes)
-import System.Environment (getArgs)
+import System.Environment (getArgs, getEnv)
 import System.Mem (performGC)
 import Torch hiding (conv2d, indexPut)
 import qualified Torch.Functional.Internal as I
@@ -25,6 +26,16 @@ import Torch.Vision.Darknet.Forward
 import Torch.Vision.Darknet.Spec
 import Torch.Vision.Datasets
 import Torch.Vision.Metrics
+import Foreign.Ptr
+
+foreign import ccall unsafe "malloc.h malloc_stats"
+  malloc_stats  :: IO ()
+
+foreign import ccall unsafe "malloc.h malloc_trim"
+  malloc_trim  :: Int -> IO ()
+
+--foreign import ccall unsafe "jemalloc/jemalloc.h malloc_stats_print"
+--jemalloc_stats  :: Ptr () -> Ptr () -> Ptr () -> IO ()
 
 labels :: [String]
 labels =
@@ -110,6 +121,17 @@ labels =
     "toothbrush"
   ]
 
+pmap :: Parameterized f => f -> (Parameter -> Parameter) -> f
+pmap model func = replaceParameters model (map func (flattenParameters model))
+
+pmapM :: Parameterized f => f -> (Parameter -> IO Parameter) -> IO f
+pmapM model func = do
+  params <- mapM func (flattenParameters model)
+  return $ replaceParameters model params
+
+toEval :: Parameterized f => f -> IO f
+toEval model = pmapM model $ \p -> makeIndependentWithRequiresGrad (toDependent p) False
+
 makeBatch :: Int -> [a] -> [[a]]
 makeBatch num_batch datasets =
   let (a, ax) = (Prelude.take num_batch datasets, Prelude.drop num_batch datasets)
@@ -133,9 +155,12 @@ main = do
   let config_file = args !! 0
       weight_file = args !! 1
       datasets_file = args !! 2
-      device = Device CUDA 0
-      toDev = _toDevice device
-      toHost = _toDevice (Device CPU 0)
+  deviceStr <- try (getEnv "DEVICE") :: IO (Either SomeException String)
+  let device = case deviceStr of
+        Right "cpu" -> Device CPU 0
+        Right "cuda:0" -> Device CUDA 0
+        Right device -> error $ "Unknown device setting: " ++ device
+        _ -> Device CPU 0
 
   spec <-
     readIniFile config_file >>= \case
@@ -144,8 +169,10 @@ main = do
           Right spec -> return spec
           Left err -> throwIO $ userError err
       Left err -> throwIO $ userError err
-  net <- sample spec
-  net' <- loadWeights net weight_file
+  net' <- do
+    net <- sample spec
+    net_ <- toDevice device <$> loadWeights net weight_file
+    toEval net_
 
   datasets <-
     readDatasets datasets_file >>= \case
@@ -164,9 +191,10 @@ main = do
         Left err -> return Nothing
     let imgs = catMaybes imgs'
         btargets = map fst imgs :: [[BBox]]
-        input_data = cat (Dim 0) $ map snd imgs :: Tensor
-    inferences <- detach $ snd $ forwardDarknet net' (Nothing, input_data)
+        input_data = _toDevice device $ cat (Dim 0) $ map snd imgs :: Tensor
+    inferences <- detach $ toCPU $ snd $ forwardDarknet net' (Nothing, input_data)
     performGC
+    malloc_trim 0
     print $ (i, shape inferences)
     let boutputs = batchedNonMaxSuppression inferences 0.001 0.5
     forM (zip btargets boutputs) $ \(!targets, !outputs) -> do
